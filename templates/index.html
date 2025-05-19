@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Food Detector</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 2rem; }
+    h1 { color: #333; }
+    form { margin-bottom: 1rem; }
+    #result { white-space: pre-wrap; background: #f9f9f9; padding: 1rem; border: 1px solid #ddd; }
+  </style>
+</head>
+<body>
+  <h1>식재료 탐지기</h1>
+  <form id="upload-form">
+    <input type="file" id="file-input" name="file" accept="image/*" required />
+    <button type="submit">Predict</button>
+  </form>
+  <h2>결과 이미지</h2>
+  <img id="result-img" style="max-width:100%; border:1px solid #ccc" alt="Annotated result" />
+  <h2>Raw JSON</h2>
+  <pre id="result-json">아직 예측하지 않음</pre>
+
+  <script>
+    const form = document.getElementById('upload-form');
+    const imgElem = document.getElementById('result-img');
+    const jsonElem = document.getElementById('result-json');
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const fileInput = document.getElementById('file-input');
+      if (!fileInput.files.length) {
+        alert('이미지를 선택해주세요.');
+        return;
+      }
+
+      const formData = new FormData();
+      formData.append('file', fileInput.files[0]);
+      imgElem.src = '';  // 초기화
+      jsonElem.textContent = '예측 중...';
+
+      try {
+        const resp = await fetch('/predict', {
+          method: 'POST',
+          body: formData
+        });
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+
+        // Annotated image
+        imgElem.src = data.annotated_image;
+
+        // JSON
+        jsonElem.textContent = JSON.stringify(data.predictions, null, 2);
+      } catch (err) {
+        jsonElem.textContent = '에러: ' + err.message;
+      }
+    });
+  </script>
+</body>
+</html>

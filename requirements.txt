@@ -1,0 +1,6 @@
+langchain
+langchain_huggingface
+langchain-community
+chromadb
+langchain-text-splitters
+langchain-google-genai
