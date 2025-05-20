@@ -234,15 +234,27 @@ def extract_ingredients(text):
             # 줄 시작 부분의 별표와 공백 제거
             item = re.sub(r"^\s*\*\s*", "", line).strip()
             if item:
-                # 콜론으로 구분된 이름과 수량
+                # 콜론으로 구분된 이름과 수량 (기존 로직)
                 parts = item.split(":", 1)
                 if len(parts) == 2:
                     name, amount = parts[0].strip(), parts[1].strip()
                 else:
-                    name, amount = item, ""
+                    # 수량 정보가 없는 경우: 수량 추정 로직 추가
+                    # 형식이 "재료명 수량" 형태인지 확인 (예: 양파 1개, 소금 약간)
+                    name_amount_match = re.match(r"^(.+?)(\d+[^\d\s]+|\d+\s*[^\d\s]+|약간|소량|적당량)$", item)
+                    if name_amount_match:
+                        name, amount = name_amount_match.groups()
+                        name = name.strip()
+                        amount = amount.strip()
+                    else:
+                        name, amount = item, "적당량"  # 기본값 설정
                 
                 # 이름에 별표가 포함된 경우 제거
                 name = name.replace("*", "").strip()
+                
+                # 수량이 비어있으면 "적당량"으로 설정
+                if not amount or amount.strip() == "":
+                    amount = "적당량"
                 
                 ingredients.append({"name": name, "amount": amount})
     return ingredients
@@ -251,10 +263,33 @@ def extract_ingredients(text):
 def extract_instructions(text):
     instructions = []
     matches = re.findall(r"###\s*(\d+)단계\s*###\n(.+?)(?=\n###|\Z)", text, re.DOTALL)
-    for step, desc in matches:
+    
+    for step_num, step_content in matches:
+        # 조리 시간 추출 시도
+        cooking_time = 0
+        time_match = re.search(r'(\d+)\s*분(?:\s*(\d+)\s*초)?', step_content)
+        if time_match:
+            minutes = int(time_match.group(1))
+            seconds = int(time_match.group(2)) if time_match.group(2) else 0
+            cooking_time = minutes * 60 + seconds  # 초 단위로 저장
+        else:
+            # 시간 정보가 없는 경우, 텍스트 길이와 난이도를 기반으로 예상 시간 계산
+            word_count = len(step_content.split())
+            if "볶" in step_content or "굽" in step_content:
+                cooking_time = min(10 * 60, max(3 * 60, word_count * 20))  # 3-10분
+            elif "끓" in step_content or "삶" in step_content:
+                cooking_time = min(15 * 60, max(5 * 60, word_count * 30))  # 5-15분
+            elif "썰" in step_content or "다듬" in step_content or "준비" in step_content:
+                cooking_time = min(5 * 60, max(1 * 60, word_count * 10))   # 1-5분
+            elif "식히" in step_content or "숙성" in step_content:
+                cooking_time = 10 * 60  # 10분
+            else:
+                cooking_time = 5 * 60  # 기본값 5분
+        
         instructions.append({
-            "step": int(step),
-            "text": desc.strip()
+            "step": int(step_num),
+            "text": step_content.strip(),
+            "cookingTime": cooking_time  # 초 단위로 저장
         })
     return instructions
 
@@ -546,22 +581,22 @@ def analyze_and_generate_recipe():
             - name: 레시피 이름
             - description: 간단한 설명
             - ingredients:
-            * 재료1: 수량
+            * 재료1: 수량 (예: 양파 1개, 간장: 2큰술, 고춧가루: 1큰술)
             * 재료2: 수량
             * 재료3: 수량
             - instructions:
             ### 1단계 ###
-            짧고 명확한 첫 번째 조리 단계 설명 (한 단계당 최대 100자)
-            
+            첫 번째 조리 단계 설명. 각 단계에 예상 소요 시간을 꼭 명시하세요. 예: "양파를 다진 후 3분간 볶아주세요."
+    
             ### 2단계 ###
-            짧고 명확한 두 번째 조리 단계 설명 (한 단계당 최대 100자)
-            
+            두 번째 조리 단계 설명. 소요 시간 명시. 예: "물 500ml를 붓고 10분간 끓여주세요."
+    
             ### 3단계 ###
-            짧고 명확한 세 번째 조리 단계 설명 (한 단계당 최대 100자)
+            세 번째 조리 단계 설명. 소요 시간 명시. 예: "고기를 넣고 5분간 더 끓인 후 간을 맞춰주세요."
             
             ...
 
-            중요: 각 단계는 최대 100자로 간결하게 작성하세요. 한 단계 내에 다른 단계(### N단계 ###)를 포함하지 마세요.
+            중요: 각 단계에 예상 소요 시간을 명확히 표시하세요 (예: "3분간 볶는다", "10분간 끓인다"). 이는 사용자의 타이머 설정에 사용됩니다. 각 단계는 최대 100자로 간결하게 작성하세요. 한 단계 내에 다른 단계(### N단계 ###)를 포함하지 마세요.
             """
         else:
             combined_query = f"""
