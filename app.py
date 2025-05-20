@@ -265,33 +265,63 @@ def extract_instructions(text):
     matches = re.findall(r"###\s*(\d+)단계\s*###\n(.+?)(?=\n###|\Z)", text, re.DOTALL)
     
     for step_num, step_content in matches:
-        # 조리 시간 추출 시도
-        cooking_time = 0
-        time_match = re.search(r'(\d+)\s*분(?:\s*(\d+)\s*초)?', step_content)
-        if time_match:
-            minutes = int(time_match.group(1))
-            seconds = int(time_match.group(2)) if time_match.group(2) else 0
-            cooking_time = minutes * 60 + seconds  # 초 단위로 저장
-        else:
-            # 시간 정보가 없는 경우, 텍스트 길이와 난이도를 기반으로 예상 시간 계산
-            word_count = len(step_content.split())
-            if "볶" in step_content or "굽" in step_content:
-                cooking_time = min(10 * 60, max(3 * 60, word_count * 20))  # 3-10분
-            elif "끓" in step_content or "삶" in step_content:
-                cooking_time = min(15 * 60, max(5 * 60, word_count * 30))  # 5-15분
-            elif "썰" in step_content or "다듬" in step_content or "준비" in step_content:
-                cooking_time = min(5 * 60, max(1 * 60, word_count * 10))   # 1-5분
-            elif "식히" in step_content or "숙성" in step_content:
-                cooking_time = 10 * 60  # 10분
-            else:
-                cooking_time = 5 * 60  # 기본값 5분
+         step_text = step_content.strip()
         
-        instructions.append({
-            "step": int(step_num),
-            "text": step_content.strip(),
-            "cookingTime": cooking_time  # 초 단위로 저장
-        })
+         # 조리 시간 추출에 새로운 함수 활용
+         cooking_time_mins, cooking_time_seconds = extract_cooking_time(step_text)
+        
+         instructions.append({
+             "step": int(step_num),
+             "text": step_text,
+             "cookingTime": cooking_time_mins,  # 분 단위로 저장
+             "cookingTimeSeconds": cooking_time_seconds  # 초 단위로 저장
+         })
     return instructions
+
+def extract_cooking_time(text):
+    """
+    텍스트에서 조리 시간을 추출하거나 예상하는 함수
+    
+    Args:
+        text (str): 조리 단계 텍스트
+        
+    Returns:
+        tuple: (분 단위 시간, 초 단위 시간)
+    """
+    # 기본값 설정
+    cooking_time_mins = 5  # 기본 5분
+    cooking_time_seconds = 300  # 기본 300초
+    
+    # 텍스트에서 "N분" 또는 "N분 M초" 패턴 추출 시도
+    time_match = re.search(r'(\d+)\s*분(?:\s*(\d+)\s*초)?', text)
+    if time_match:
+        minutes = int(time_match.group(1))
+        seconds = int(time_match.group(2)) if time_match.group(2) and time_match.group(2).strip() else 0
+        cooking_time_mins = minutes
+        cooking_time_seconds = minutes * 60 + seconds
+    else:
+        # 패턴이 없는 경우 텍스트 내용에 따라 시간 추정
+        word_count = len(text.split())
+        
+        if "볶" in text or "굽" in text:
+            # 볶거나 굽는 작업은 3-10분 소요, 단어 수에 따라 조정
+            cooking_time_seconds = min(10 * 60, max(3 * 60, word_count * 20))  # 3-10분
+            cooking_time_mins = cooking_time_seconds // 60
+        elif "끓" in text or "삶" in text:
+            # 끓이거나 삶는 작업은 5-15분 소요, 단어 수에 따라 조정
+            cooking_time_seconds = min(15 * 60, max(5 * 60, word_count * 30))  # 5-15분
+            cooking_time_mins = cooking_time_seconds // 60
+        elif "썰" in text or "다듬" in text or "준비" in text:
+            # 썰거나 준비하는 작업은 1-5분 소요, 단어 수에 따라 조정
+            cooking_time_seconds = min(5 * 60, max(1 * 60, word_count * 10))  # 1-5분
+            cooking_time_mins = cooking_time_seconds // 60
+        elif "식히" in text or "숙성" in text:
+            # 식히거나 숙성하는 작업은 10분 정도 소요
+            cooking_time_seconds = 10 * 60  # 10분
+            cooking_time_mins = 10
+        # 기본값은 이미 설정됨 (5분, 300초)
+    
+    return cooking_time_mins, cooking_time_seconds
 
 # 기존 extract_instructions 함수 이후에 추가 처리 단계 구현
 def process_instruction_steps(instructions_raw):
@@ -307,9 +337,15 @@ def process_instruction_steps(instructions_raw):
         if inner_steps:
             # 내부 단계 패턴이 있는 경우
             for inner_step, inner_text in inner_steps:
+                inner_text = inner_text.strip()
+                
+                # 조리 시간 추출
+                cooking_time_mins, cooking_time_seconds = extract_cooking_time(inner_text)
+                
                 processed_instructions.append({
-                    "instruction": inner_text.strip(),
-                    "cookingTime": 5,
+                    "instruction": inner_text,
+                    "cookingTime": cooking_time_mins,
+                    "cookingTimeSeconds": cooking_time_seconds,
                     "stepNumber": int(inner_step)
                 })
         else:
@@ -324,9 +360,16 @@ def process_instruction_steps(instructions_raw):
                     if len(current_chunk) + len(sentence) <= 200:
                         current_chunk += " " + sentence if current_chunk else sentence
                     else:
+                        # 첫 번째 청크만 조리 시간 추출
+                        if chunk_counter == 0:
+                            cooking_time_mins, cooking_time_seconds = extract_cooking_time(current_chunk)
+                        else:
+                            cooking_time_mins, cooking_time_seconds = 0, 0  # 첫 번째가 아닌 청크는 시간 0
+                        
                         processed_instructions.append({
                             "instruction": current_chunk.strip(),
-                            "cookingTime": 5 if chunk_counter == 0 else 0,
+                            "cookingTime": cooking_time_mins,
+                            "cookingTimeSeconds": cooking_time_seconds,
                             "stepNumber": step_num * 100 + chunk_counter
                         })
                         chunk_counter += 1
@@ -334,16 +377,25 @@ def process_instruction_steps(instructions_raw):
                 
                 # 마지막 청크 저장
                 if current_chunk:
+                    if chunk_counter == 0:
+                        cooking_time_mins, cooking_time_seconds = extract_cooking_time(current_chunk)
+                    else:
+                        cooking_time_mins, cooking_time_seconds = 0, 0
+                    
                     processed_instructions.append({
                         "instruction": current_chunk.strip(),
-                        "cookingTime": 5 if chunk_counter == 0 else 0,
+                        "cookingTime": cooking_time_mins,
+                        "cookingTimeSeconds": cooking_time_seconds,
                         "stepNumber": step_num * 100 + chunk_counter
                     })
             else:
                 # 짧은 텍스트는 그대로 저장
+                cooking_time_mins, cooking_time_seconds = extract_cooking_time(text)
+                
                 processed_instructions.append({
                     "instruction": text,
-                    "cookingTime": 5,
+                    "cookingTime": cooking_time_mins,
+                    "cookingTimeSeconds": cooking_time_seconds,
                     "stepNumber": step_num
                 })
     
@@ -424,9 +476,15 @@ def generate_recipe_or_reject():
         # 응답 형식 수정
         instructions_processed = []
         for idx, step in enumerate(instructions_raw):
+            step_text = step.strip()
+    
+            # 조리 시간 추출에 새로운 함수 활용
+            cooking_time_mins, cooking_time_seconds = extract_cooking_time(step_text)
+            
             instructions_processed.append({
-                "instruction": step.strip(),
-                "cookingTime": 5,
+                "instruction": step_text,
+                "cookingTime": cooking_time_mins,
+                "cookingTimeSeconds": cooking_time_seconds,
                 "stepNumber": idx + 1
             })
         
@@ -655,10 +713,15 @@ def analyze_and_generate_recipe():
             for step_num, step_content in steps:
                 step_text = step_content.strip()
                 if step_text:
+                    # 조리 시간 추출
+                    cooking_time_mins, cooking_time_seconds = extract_cooking_time(step_text)
+                    print(f"단계 {step_num}에서 조리 시간: {cooking_time_mins}분 ({cooking_time_seconds}초)")
+                    
                     # 이 부분이 중요: stepNumber를 일반적인 숫자로 설정
                     processed_instructions.append({
                         "instruction": step_text,
-                        "cookingTime": 5,
+                        "cookingTime": cooking_time_mins,
+                        "cookingTimeSeconds": cooking_time_seconds,
                         "stepNumber": int(step_num)
                     })
                     print(f"단계 {step_num}: {step_text[:50]}...")
@@ -704,16 +767,23 @@ def analyze_and_generate_recipe():
             print(f"Ingredients count: {len(ingredients)}")
             print(f"Instructions count: {len(processed_instructions)}")
 
+            # 총 조리 시간 계산
+            total_cooking_time_seconds = sum(instruction.get("cookingTimeSeconds", 0) for instruction in processed_instructions)
+            total_cooking_time_mins = total_cooking_time_seconds // 60
+
+            # 응답 JSON에 추가
             response_json = {
                 "name": name,
                 "description": description,
                 "ingredients": ingredients,
-                "instructions": processed_instructions,  # 변환된 지시사항 형식
+                "instructions": processed_instructions,
                 "imageUrl": f"data:image/jpeg;base64,{img_b64}",
                 "user": {
                     "username": username
                 },
-                "sessionId": session_id
+                "sessionId": session_id,
+                "totalCookingTime": total_cooking_time_mins,  # 총 조리 시간(분) 추가
+                "totalCookingTimeSeconds": total_cooking_time_seconds  # 총 조리 시간(초) 추가
             }
             
             print("응답 구조:")
