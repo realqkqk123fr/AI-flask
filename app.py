@@ -44,21 +44,40 @@ def chat():
     """
     
     try:
-        # 요청 데이터 파싱 (JSON 또는 form-data 모두 지원)
+        # 인코딩 설정 확인
+        print(f"요청 인코딩: {request.charset if hasattr(request, 'charset') else 'None'}")
+        print(f"요청 Content-Type: {request.headers.get('Content-Type', 'None')}")
+
+        # JSON 요청 처리
         if request.is_json:
-            # JSON 형식 처리
             data = request.get_json()
+            print(f"수신된 JSON 데이터: {data}")
         else:
-            # form-data 형식 처리
+            # 폼 데이터 처리 (이전 방식)
             data = {
                 "message": request.form.get("message"),
                 "username": request.form.get("username", "사용자"),
                 "sessionId": request.form.get("sessionId", "")
             }
-        
+            print(f"수신된 폼 데이터: {data}")
+
         message = data.get("message")
         username = data.get("username", "사용자")
         session_id = data.get("sessionId", "")
+
+        # 메시지 검증
+        if not message:
+            print("메시지가 비어 있음")
+            return jsonify({
+                "error": "메시지가 비어 있습니다",
+                "message": "메시지를 입력해주세요."
+            }), 400
+
+        # 여기에 로깅 추가
+        print(f"수신된 원본 메시지 (repr): {message!r}")
+        print(f"수신된 원본 메시지 (type): {type(message)}")
+        print(f"수신된 원본 메시지 (len): {len(message) if message else 0}")
+        print(f"수신된 원본 메시지 (bytes): {message.encode('utf-8') if message else b''}")
         
         # 세션 ID가 없는 경우 생성 (클라이언트가 제공하지 않은 경우)
         if not session_id:
@@ -110,9 +129,18 @@ def chat():
             # (시스템 메시지 1개 + 사용자/어시스턴트 메시지 최대 3쌍)
             recent_messages = conversation_history[session_id][-7:] if len(conversation_history[session_id]) > 7 else conversation_history[session_id]
             
+            # 여기에 대화 맥락 로깅 추가
+            print("\n============= 대화 맥락 상세 =============")
+            for idx, msg in enumerate(conversation_history[session_id]):
+                role = msg["role"]
+                content_preview = msg["content"][:50].replace('\n', ' ')
+                content_preview += "..." if len(msg["content"]) > 50 else ""
+                print(f"[{idx}] {role}: {content_preview}")
+            print("=========================================\n")
+
             # LLM에 전송할 최종 프롬프트 구성
             messages = []
-            
+
             # 시스템 메시지 추가
             for msg in recent_messages:
                 if msg["role"] == "system":
@@ -178,6 +206,11 @@ def chat():
             
             print(f"LLM 응답: {response_text[:100]}...")
             
+            # 여기에 응답 로깅 추가
+            print(f"\n========== LLM 응답 원본 ==========")
+            print(f"{response_text}")
+            print(f"===================================\n")
+
             # AI 응답을 대화 기록에 추가
             conversation_history[session_id].append({"role": "assistant", "content": response_text})
             
@@ -189,13 +222,52 @@ def chat():
             # 현재 대화 상태 로깅
             print(f"대화 내역 길이(업데이트 후): {len(conversation_history[session_id])}")
             
-            # 응답 반환 (세션 ID도 함께 반환하여 클라이언트가 유지할 수 있도록)
-            return jsonify({
-                "message": response_text,
+            # 응답 처리 및 정리 (마크다운 및 description 형식 처리)
+            cleaned_message = response_text
+            
+            # 여기에 정리 과정 로깅 추가
+            print(f"\n========== 메시지 정리 과정 ==========")
+            print(f"원본 메시지: {cleaned_message[:100]}...")
+
+            # Markdown 헤더(##) 제거
+            cleaned_message = re.sub(r'^##\s+', '', cleaned_message)
+            print(f"헤더 제거 후: {cleaned_message[:100]}...")
+
+            # description: 형식 추출
+            desc_match = re.search(r'- description\s*:\s*(.+?)(?=$|\n\n)', cleaned_message, re.DOTALL)
+            if desc_match:
+                # description 내용만 추출
+                cleaned_message = desc_match.group(1).strip()
+                print(f"description 추출: {cleaned_message[:100]}...")
+            else:
+                # description 패턴이 없으면 전체 텍스트 사용 (불필요한 마크다운 제거)
+                print("description 패턴 없음, 마크다운 제거")
+                cleaned_message = re.sub(r'- \w+\s*:\s*', '', cleaned_message)
+                cleaned_message = re.sub(r'^\s*\*\s*', '', cleaned_message, flags=re.MULTILINE)
+                cleaned_message = re.sub(r'###\s*\d+단계\s*###', '', cleaned_message)
+                print(f"마크다운 제거 후: {cleaned_message[:100]}...")
+
+            # 여러 줄 공백 제거
+            cleaned_message = re.sub(r'\n{3,}', '\n\n', cleaned_message)
+            print(f"최종 정리된 메시지: {cleaned_message[:100]}...")
+            print(f"=====================================\n")
+
+            print(f"정리된 메시지: {cleaned_message[:100]}...")
+            
+            # 최종 응답 로깅
+            final_response = {
+                "message": cleaned_message,
                 "username": "AI 요리사",
                 "sessionId": session_id
-            })
-        
+            }
+            print(f"\n========== 최종 응답 JSON ==========")
+            import json
+            print(json.dumps(final_response, ensure_ascii=False, indent=2))
+            print(f"===================================\n")
+
+            # 응답 반환
+            return jsonify(final_response)
+                    
         except Exception as e:
             print(f"오류 발생: {str(e)}")
             traceback.print_exc()  # 상세 스택 트레이스 출력
@@ -213,7 +285,7 @@ def chat():
             "message": f"요청 형식이 올바르지 않습니다: {str(e)}",
             "username": "AI 요리사"
         }), 400
-                
+                    
 # 레시피 이름 추출
 def extract_name(text):
     match = re.search(r"- name\s*:\s*(.+)", text)
@@ -548,25 +620,51 @@ def extract_nutrition(text):
         match = re.search(pattern, text)
         if match:
             value = match.group(1)
+            # 디버깅을 위해 추출된 값 로깅
+            print(f"추출된 값 ({pattern}): {value}")
             if '-' in value or '~' in value:
+                # 범위 값 처리 개선
                 parts = re.split(r"[-~]", value)
-                nums = [float(p.strip()) for p in parts if p.strip().replace('.', '', 1).isdigit()]
+                # 숫자만 추출 (단위 제거)
+                nums = []
+                for p in parts:
+                    # 숫자 부분만 추출
+                    num_str = re.sub(r"[^0-9.]", "", p.strip())
+                    if num_str:
+                        try:
+                            nums.append(float(num_str))
+                        except ValueError:
+                            print(f"숫자 변환 실패: {num_str}")
+                
+                # 결과 로깅 및 계산
+                print(f"추출된 숫자: {nums}")
                 return sum(nums) / len(nums) if nums else default
-            value = re.sub(r"[^\d.]", "", value)
+            
+            # 단일 값인 경우 - 단위 제거
+            value = re.sub(r"[^0-9.]", "", value)
             return float(value) if value else default
+        
+        # 일치하는 패턴이 없는 경우
+        print(f"패턴 미일치: {pattern}")
         return default
 
-    return {
-        "calories": extract_value(r"칼로리\s*:\s*약\s*([\d\-~]+)kcal"),     # kcal
-        "carbohydrate": extract_value(r"탄수화물\s*:\s*약\s*([\d\-~]+)g"),  # g  
-        "protein": extract_value(r"단백질\s*:\s*약\s*([\d\-~]+)g"),         # g
-        "fat": extract_value(r"지방\s*:\s*약\s*([\d\-~]+)g"),               # g
-        "sugar": extract_value(r"당\s*:\s*약\s*([\d\-~]+)g"),               # g
-        "sodium": extract_value(r"나트륨\s*:\s*약\s*([\d\-~]+)mg"),         # mg
-        "saturatedFat": extract_value(r"포화지방\s*:\s*([\d\-~]+)g"),       # g
-        "transFat": extract_value(r"트랜스지방\s*:\s*([\d.]+)g"),           # g
-        "cholesterol": extract_value(r"콜레스테롤\s*:\s*([\d\-~]+)mg")      # mg
+    # 기존 패턴 개선
+    result = {
+        "calories": extract_value(r"칼로리:?\s*약?\s*([\d\-~]+)\s*kcal"),      # kcal
+        "carbohydrate": extract_value(r"탄수화물:?\s*약?\s*([\d\-~]+)\s*g"),   # g  
+        "protein": extract_value(r"단백질:?\s*약?\s*([\d\-~]+)\s*g"),         # g
+        "fat": extract_value(r"지방:?\s*약?\s*([\d\-~]+)\s*g"),              # g
+        "sugar": extract_value(r"당:?\s*약?\s*([\d\-~]+)\s*g"),              # g
+        "sodium": extract_value(r"나트륨:?\s*약?\s*([\d\-~]+)\s*mg"),         # mg
+        "saturatedFat": extract_value(r"포화지방:?\s*약?\s*([\d\-~]+)\s*g"),   # g
+        "transFat": extract_value(r"트랜스지방:?\s*약?\s*([\d.]+|미량)\s*g?"),  # g
+        "cholesterol": extract_value(r"콜레스테롤:?\s*약?\s*([\d\-~]+)\s*mg")  # mg
     }
+    
+    # 디버깅을 위한 결과 로깅
+    print(f"추출된 영양 정보: {result}")
+    
+    return result
 
 ## 새로운 통합 엔드포인트 - 이미지 분석 + 레시피 생성
 @app.route("/analyze_and_generate_recipe", methods=["POST"])
@@ -574,6 +672,9 @@ def analyze_and_generate_recipe():
     try:
         print("=== 요청 시작 ===")
         print(f"Instructions: {request.form.get('instructions', '')}")
+        print(f"Instructions 타입: {type(request.form.get('instructions', ''))}")
+        print(f"Instructions 길이: {len(request.form.get('instructions', ''))}")
+        print(f"Instructions 바이트: {request.form.get('instructions', '').encode('utf-8')}")
         print(f"Username: {request.form.get('username', '')}")
 
         # 이미지 파일 확인
@@ -589,18 +690,51 @@ def analyze_and_generate_recipe():
         
         # 이미지 저장
         image_file = request.files['image']
-        
+
         # 파일 이름 안전하게 처리
         import os
         import uuid
         from werkzeug.utils import secure_filename
-        
-        # 파일 확장자 유지하면서 안전한 파일 이름 생성
-        file_ext = os.path.splitext(secure_filename(image_file.filename))[1]
+
+        # 원본 파일명에서 확장자 추출 (소문자로 변환)
+        original_filename = image_file.filename
+        print(f"원본 파일명: {original_filename}")
+        file_ext = os.path.splitext(original_filename)[1].lower()  # 소문자로 변환
+
+        # 확장자가 없거나 비어있는 경우 기본 확장자 추가
+        if not file_ext:
+            file_ext = '.jpg'  # 기본 이미지 확장자
+            print(f"확장자가 없어 기본값 적용: {file_ext}")
+        else:
+            print(f"추출된 확장자: {file_ext}")
+
+        # 안전한 파일명 생성
         safe_filename = f"{uuid.uuid4().hex}{file_ext}"
-        
+        print(f"생성된 안전한 파일명: {safe_filename}")
+
+        # 저장 경로 생성
         path = os.path.join(app.config['UPLOAD_FOLDER'], safe_filename)
+        print(f"이미지 저장 경로: {path}")
+
+        # 파일 저장
         image_file.save(path)
+
+        # 파일이 실제로 저장되었는지 확인
+        if os.path.exists(path):
+            file_size = os.path.getsize(path)
+            print(f"이미지 저장 성공: {path} (크기: {file_size} 바이트)")
+        else:
+            print(f"이미지 저장 실패: {path}")
+            return jsonify({"error": "이미지 파일 저장에 실패했습니다."}), 500
+
+        # 선택적: 이미지 유효성 검사 (PIL이 이미 임포트되어 있다고 가정)
+        try:
+            img_check = Image.open(path)
+            img_check.verify()  # 빠른 검증
+            print(f"이미지 검증 성공: 형식={img_check.format}")
+        except Exception as e:
+            print(f"이미지 검증 실패: {str(e)}")
+            # 검증 실패해도 계속 진행 (모델이 처리할 수도 있으므로)
         
         # 1. YOLO 모델을 사용한 이미지 분석
         results = model.predict(source=path, imgsz=640, conf=0.25)
