@@ -496,83 +496,240 @@ def process_instruction_steps(instructions_raw):
 
 @app.route('/generate_recipe_or_reject', methods=['POST'])
 def generate_recipe_or_reject():
-    data = request.get_json()
-    ori = data.get("ori")
-    sub = data.get("sub")
-    recipe = data.get("recipe")
-
-    if not all([ori, sub, recipe]):
-        return jsonify({"error": "요청 필드가 부족합니다."}), 400
-
     try:
-        similarity_score = check_replace(ori, sub)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
+        # 요청 데이터 검증
+        if not request.is_json:
+            return jsonify({
+                "error": "JSON 형식의 요청이 필요합니다.",
+                "name": "",
+                "description": "요청 형식이 올바르지 않습니다.",
+                "ingredients": [],
+                "instructions": [],
+                "user": None,
+                "substituteFailure": True
+            }), 400
 
-    if similarity_score < 0.6:
-        return jsonify({
-            "name": recipe,
-            "description": f"{ori}를 {sub}로 대체하는 것은 적절하지 않아 레시피를 생성할 수 없습니다.",
-            "ingredients": [],
-            "instructions": [],
-            "user": None
-        })
-
-    # LLM 질의 및 응답
-    query = f"{ori}를 {sub}로 교체한 {recipe}의 레시피를 알려줘"
-    result = qa_chain.invoke({"question": query})
-    raw = result["answer"]
-
-    # 🔍 파싱 시작
-    try:
-        name = re.search(r'- name *: *(.*)', raw).group(1).strip()
-        description = re.search(r'- description *: *(.*)', raw).group(1).strip()
-
-        # ingredients 파싱
-        ingredients_raw = re.findall(r'\* *(.*)', raw)
-        ingredients = []
-        for item in ingredients_raw:
-            parts = item.split(' ', 1)
-            if len(parts) == 2:
-                ingredients.append({"name": parts[0], "amount": parts[1]})
-            else:
-                ingredients.append({"name": parts[0], "amount": ""})
-
-        # instructions 파싱
-        instructions_raw = re.findall(r'### *\d+단계 *###\n(.+?)(?=\n###|\Z)', raw, re.DOTALL)
-        instructions = [
-            {"step": idx + 1, "description": step.strip()}
-            for idx, step in enumerate(instructions_raw)
-        ]
-
-        # 응답 형식 수정
-        instructions_processed = []
-        for idx, step in enumerate(instructions_raw):
-            step_text = step.strip()
-    
-            # 조리 시간 추출에 새로운 함수 활용
-            cooking_time_mins, cooking_time_seconds = extract_cooking_time(step_text)
-            
-            instructions_processed.append({
-                "instruction": step_text,
-                "cookingTime": cooking_time_mins,
-                "cookingTimeSeconds": cooking_time_seconds,
-                "stepNumber": idx + 1
-            })
+        data = request.get_json()
         
+        # 필수 필드 검증
+        ori = data.get("ori", "").strip() if data.get("ori") else ""
+        sub = data.get("sub", "").strip() if data.get("sub") else ""
+        recipe = data.get("recipe", "").strip() if data.get("recipe") else ""
+        
+        # 새로 추가: 기존 레시피 데이터
+        original_recipe_data = data.get("originalRecipe", {})
+        original_ingredients = original_recipe_data.get("ingredients", [])
+        original_instructions = original_recipe_data.get("instructions", [])
+
+        # 입력값 로깅
+        print(f"대체 재료 요청 - 원재료: '{ori}', 대체재료: '{sub}', 레시피: '{recipe}'")
+        print(f"기존 레시피 재료 수: {len(original_ingredients)}")
+
+        # 필수 필드 검증
+        missing_fields = []
+        if not ori:
+            missing_fields.append("원재료(ori)")
+        if not sub:
+            missing_fields.append("대체재료(sub)")
+        if not recipe:
+            missing_fields.append("레시피명(recipe)")
+
+        if missing_fields:
+            error_msg = f"다음 필드가 누락되었습니다: {', '.join(missing_fields)}"
+            print(f"필수 필드 누락: {error_msg}")
+            return jsonify({
+                "error": error_msg,
+                "name": recipe or "알 수 없는 레시피",
+                "description": f"{ori}를 {sub}로 대체하기 위한 정보가 부족합니다.",
+                "ingredients": [],
+                "instructions": [],
+                "user": None,
+                "substituteFailure": True
+            }), 400
+
+        # 유사도 검사
+        try:
+            print(f"유사도 검사 시작: '{ori}' vs '{sub}'")
+            similarity_score = check_replace(ori, sub)
+            print(f"유사도 점수: {similarity_score}")
+        except ValueError as e:
+            error_msg = f"재료 정보를 찾을 수 없습니다: {str(e)}"
+            print(f"유사도 검사 오류: {error_msg}")
+            return jsonify({
+                "error": error_msg,
+                "name": recipe,
+                "description": f"'{ori}' 또는 '{sub}' 재료에 대한 정보가 데이터베이스에 없어 대체 재료 분석을 수행할 수 없습니다.",
+                "ingredients": [],
+                "instructions": [],
+                "user": None,
+                "substituteFailure": True
+            }), 400
+
+        # 유사도가 낮은 경우 (임계값: 0.6)
+        if similarity_score < 0.6:
+            print(f"유사도 점수가 낮음: {similarity_score} < 0.6")
+            return jsonify({
+                "name": recipe,
+                "description": f"{ori}를 {sub}로 대체하는 것은 적절하지 않아 레시피를 생성할 수 없습니다. (유사도: {similarity_score:.2f})",
+                "ingredients": [],
+                "instructions": [],
+                "user": None,
+                "substituteFailure": True
+            }), 200
+
+        # 기존 재료에서 대체 재료 찾기 및 업데이트
+        updated_ingredients = update_ingredients_with_substitute(original_ingredients, ori, sub)
+        
+        # 기존 조리법에서 재료명 업데이트
+        updated_instructions = update_instructions_with_substitute(original_instructions, ori, sub)
+        
+        # 대체 재료 수량 추정 (LLM 사용)
+        substitute_amount = estimate_substitute_amount(ori, sub, updated_ingredients)
+        
+        # 업데이트된 재료 리스트에서 대체 재료의 수량 조정
+        for ingredient in updated_ingredients:
+            if ingredient.get("name", "").lower() == sub.lower():
+                if substitute_amount and substitute_amount != "적당량":
+                    ingredient["amount"] = substitute_amount
+                break
+
+        # 레시피 설명 업데이트
+        updated_description = f"{ori}를 {sub}로 대체한 {recipe}입니다. 대체 재료로 인한 맛과 식감의 변화를 고려하여 조리해주세요."
+
+        # 성공적인 응답 구성
         response_json = {
-            "name": name,
-            "description": description,
-            "ingredients": ingredients,
-            "instructions": instructions_processed,  # 변환된 형식
-            "user": None
+            "name": f"{sub}를 사용한 {recipe}",
+            "description": updated_description,
+            "ingredients": updated_ingredients,
+            "instructions": updated_instructions,
+            "user": None,
+            "substituteFailure": False,
+            "substitutionInfo": {
+                "original": ori,
+                "substitute": sub,
+                "similarityScore": similarity_score,
+                "estimatedAmount": substitute_amount
+            }
         }
 
-        return jsonify(response_json)
+        print(f"대체 레시피 업데이트 성공: {ori} -> {sub}")
+        return jsonify(response_json), 200
 
     except Exception as e:
-        return jsonify({"error": f"레시피 파싱 중 오류 발생: {str(e)}"}), 500
+        print(f"전체 처리 오류: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+        return jsonify({
+            "error": f"요청 처리 중 오류 발생: {str(e)}",
+            "name": "알 수 없는 레시피",
+            "description": "대체 재료 요청 처리 중 예상치 못한 오류가 발생했습니다.",
+            "ingredients": [],
+            "instructions": [],
+            "user": None,
+            "substituteFailure": True
+        }), 500
 
+
+def update_ingredients_with_substitute(original_ingredients, ori, sub):
+    """
+    기존 재료 리스트에서 원재료를 대체재료로 교체
+    """
+    updated_ingredients = []
+    substitute_found = False
+    
+    for ingredient in original_ingredients:
+        ingredient_name = ingredient.get("name", "").lower()
+        ori_lower = ori.lower()
+        
+        # 원재료와 일치하는지 확인 (부분 일치 포함)
+        if ori_lower in ingredient_name or ingredient_name in ori_lower:
+            # 대체 재료로 교체
+            updated_ingredient = {
+                "name": sub,
+                "amount": ingredient.get("amount", "적당량")  # 기존 수량 유지
+            }
+            updated_ingredients.append(updated_ingredient)
+            substitute_found = True
+            print(f"재료 대체됨: {ingredient.get('name')} -> {sub}")
+        else:
+            # 기존 재료 유지
+            updated_ingredients.append(ingredient.copy())
+    
+    # 원재료를 찾지 못한 경우 대체재료 추가
+    if not substitute_found:
+        print(f"원재료 '{ori}'를 찾지 못해 대체재료 '{sub}' 추가")
+        updated_ingredients.append({
+            "name": sub,
+            "amount": "적당량"
+        })
+    
+    return updated_ingredients
+
+
+def update_instructions_with_substitute(original_instructions, ori, sub):
+    """
+    기존 조리법에서 원재료 언급을 대체재료로 교체
+    """
+    updated_instructions = []
+    
+    for instruction in original_instructions:
+        instruction_text = instruction.get("instruction", "")
+        
+        # 재료명을 대소문자 구분 없이 교체
+        updated_text = re.sub(
+            re.escape(ori), 
+            sub, 
+            instruction_text, 
+            flags=re.IGNORECASE
+        )
+        
+        # 업데이트된 조리법 저장
+        updated_instruction = instruction.copy()
+        updated_instruction["instruction"] = updated_text
+        updated_instructions.append(updated_instruction)
+        
+        if updated_text != instruction_text:
+            print(f"조리법 업데이트됨: {ori} -> {sub}")
+    
+    return updated_instructions
+
+
+def estimate_substitute_amount(ori, sub, ingredients_list):
+    """
+    LLM을 사용하여 대체 재료의 적절한 수량 추정
+    """
+    try:
+        # 기존 재료에서 원재료의 수량 찾기
+        original_amount = "적당량"
+        for ingredient in ingredients_list:
+            if ori.lower() in ingredient.get("name", "").lower():
+                original_amount = ingredient.get("amount", "적당량")
+                break
+        
+        # LLM에게 대체 재료 수량 추정 요청
+        query = f"""
+        요리에서 '{ori}' {original_amount}를 '{sub}'로 대체할 때 적절한 수량을 알려주세요.
+        
+        답변은 오직 수량만 간단히 답해주세요. 예: "2큰술", "100g", "1개", "적당량"
+        설명이나 부가적인 내용은 포함하지 마세요.
+        """
+        
+        result = qa_chain.invoke({"question": query})
+        estimated_amount = result["answer"].strip()
+        
+        # 응답에서 수량 부분만 추출
+        amount_match = re.search(r'(\d+(?:\.\d+)?\s*(?:큰술|작은술|컵|개|g|kg|ml|l|조각|편|대|뿌리|적당량))', estimated_amount)
+        if amount_match:
+            return amount_match.group(1)
+        elif "적당량" in estimated_amount:
+            return "적당량"
+        else:
+            return original_amount  # 추정 실패 시 원래 수량 사용
+            
+    except Exception as e:
+        print(f"수량 추정 오류: {str(e)}")
+        return "적당량"
 
 ######################## 영양소 출력 LLM #####################################
 """
@@ -616,49 +773,72 @@ def nutrition():
 
 
 def extract_nutrition(text):
-    def extract_value(pattern, default=0.0):
-        match = re.search(pattern, text)
-        if match:
-            value = match.group(1)
-            # 디버깅을 위해 추출된 값 로깅
-            print(f"추출된 값 ({pattern}): {value}")
-            if '-' in value or '~' in value:
-                # 범위 값 처리 개선
-                parts = re.split(r"[-~]", value)
-                # 숫자만 추출 (단위 제거)
-                nums = []
-                for p in parts:
-                    # 숫자 부분만 추출
-                    num_str = re.sub(r"[^0-9.]", "", p.strip())
-                    if num_str:
-                        try:
-                            nums.append(float(num_str))
-                        except ValueError:
-                            print(f"숫자 변환 실패: {num_str}")
-                
-                # 결과 로깅 및 계산
-                print(f"추출된 숫자: {nums}")
-                return sum(nums) / len(nums) if nums else default
-            
-            # 단일 값인 경우 - 단위 제거
-            value = re.sub(r"[^0-9.]", "", value)
-            return float(value) if value else default
+    def extract_value(label, default=0.0):
+        # 마크다운 별표(*) 및 대시(-) 제거
+        clean_text = re.sub(r'^\s*\*\s*|\*\*', '', text, flags=re.MULTILINE)
         
-        # 일치하는 패턴이 없는 경우
-        print(f"패턴 미일치: {pattern}")
+        # 특정 라벨에 대한 행 전체를 찾음
+        label_pattern = r'[-*]?\s*' + re.escape(label) + r'\s*:\s*(?:약\s*)?(.*?)(?:\n|$)'
+        match = re.search(label_pattern, clean_text, re.IGNORECASE | re.MULTILINE)
+        
+        if match:
+            # 전체 값 부분 추출 (설명 포함)
+            full_value = match.group(1).strip()
+            print(f"라벨 '{label}'에 대한 추출된 전체 값: {full_value}")
+            
+            # 설명 부분 제거 (괄호 안 내용)
+            value_without_desc = re.sub(r'\s*\(.*?\)', '', full_value)
+            print(f"설명 제거 후 값: {value_without_desc}")
+            
+            # 범위 값 처리 (예: "450-600kcal")
+            if '-' in value_without_desc or '~' in value_without_desc:
+                # 범위 구분자(-, ~)로 분리
+                parts = re.split(r'[-~]', value_without_desc)
+                nums = []
+                
+                for part in parts:
+                    # 숫자만 추출
+                    num_match = re.search(r'(\d+(?:\.\d+)?)', part)
+                    if num_match:
+                        try:
+                            nums.append(float(num_match.group(1)))
+                        except ValueError:
+                            print(f"숫자 변환 실패: {num_match.group(1)}")
+                
+                if nums:
+                    print(f"범위에서 추출된 숫자들: {nums}")
+                    # 평균값 반환
+                    return sum(nums) / len(nums)
+                return default
+            
+            # "미량", "0g" 등의 특수 케이스 처리
+            if '미량' in value_without_desc or '0g' in value_without_desc:
+                return 0.0
+            
+            # 일반 숫자 추출 (단위 무시)
+            num_match = re.search(r'(\d+(?:\.\d+)?)', value_without_desc)
+            if num_match:
+                try:
+                    return float(num_match.group(1))
+                except ValueError:
+                    print(f"일반 숫자 변환 실패: {num_match.group(1)}")
+            
+            return default
+        
+        print(f"라벨 '{label}'에 대한 패턴 미일치")
         return default
 
-    # 기존 패턴 개선
+    # 각 영양소에 대해 라벨 기반 추출 수행
     result = {
-        "calories": extract_value(r"칼로리:?\s*약?\s*([\d\-~]+)\s*kcal"),      # kcal
-        "carbohydrate": extract_value(r"탄수화물:?\s*약?\s*([\d\-~]+)\s*g"),   # g  
-        "protein": extract_value(r"단백질:?\s*약?\s*([\d\-~]+)\s*g"),         # g
-        "fat": extract_value(r"지방:?\s*약?\s*([\d\-~]+)\s*g"),              # g
-        "sugar": extract_value(r"당:?\s*약?\s*([\d\-~]+)\s*g"),              # g
-        "sodium": extract_value(r"나트륨:?\s*약?\s*([\d\-~]+)\s*mg"),         # mg
-        "saturatedFat": extract_value(r"포화지방:?\s*약?\s*([\d\-~]+)\s*g"),   # g
-        "transFat": extract_value(r"트랜스지방:?\s*약?\s*([\d.]+|미량)\s*g?"),  # g
-        "cholesterol": extract_value(r"콜레스테롤:?\s*약?\s*([\d\-~]+)\s*mg")  # mg
+        "calories": extract_value("칼로리"),
+        "carbohydrate": extract_value("탄수화물"),
+        "protein": extract_value("단백질"),
+        "fat": extract_value("지방"),
+        "sugar": extract_value("당"),
+        "sodium": extract_value("나트륨"),
+        "saturatedFat": extract_value("포화지방"),
+        "transFat": extract_value("트랜스지방"),
+        "cholesterol": extract_value("콜레스테롤")
     }
     
     # 디버깅을 위한 결과 로깅
@@ -769,6 +949,7 @@ def analyze_and_generate_recipe():
 
             이미지에서 감지된 재료: {ingredients_str}
 
+
             다음 형식으로 레시피를 제공해주세요:
             - name: 레시피 이름
             - description: 간단한 설명
@@ -789,6 +970,7 @@ def analyze_and_generate_recipe():
             ...
 
             중요: 각 단계에 예상 소요 시간을 명확히 표시하세요 (예: "3분간 볶는다", "10분간 끓인다"). 이는 사용자의 타이머 설정에 사용됩니다. 각 단계는 최대 100자로 간결하게 작성하세요. 한 단계 내에 다른 단계(### N단계 ###)를 포함하지 마세요.
+                  이미지에서 감지된 재료 중심으로 레시피를 제공해주세요.
             """
         else:
             combined_query = f"""

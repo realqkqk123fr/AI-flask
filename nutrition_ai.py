@@ -48,7 +48,22 @@ llm = ChatGoogleGenerativeAI(
 )
 
 def get_nutrition_info(ingredient_text: str) -> str:
-    query = f"{ingredient_text}의 영양성분을 알려줘"
+    query = f"""다음 재료에 대한 영양 정보를 제공해주세요: {ingredient_text}
+    
+    영양 정보는 정확히 다음 형식으로 제공해주세요:
+    칼로리: [숫자]kcal
+    탄수화물: [숫자]g
+    단백질: [숫자]g
+    지방: [숫자]g
+    당: [숫자]g
+    나트륨: [숫자]mg
+    포화지방: [숫자]g
+    트랜스지방: [숫자]g
+    콜레스테롤: [숫자]mg
+    
+    범위 대신 평균값을 사용하고, 괄호 안에 부가 설명을 추가하지 마세요.
+    미량인 경우 '0'으로 표시하세요."""
+    
     final_prompt = prompt.format_messages(question=query)
     response = llm.invoke(final_prompt)
     return response.content
