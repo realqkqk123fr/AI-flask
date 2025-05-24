@@ -496,9 +496,13 @@ def process_instruction_steps(instructions_raw):
 
 @app.route('/generate_recipe_or_reject', methods=['POST'])
 def generate_recipe_or_reject():
+    """
+    대체 재료 요청 처리 API (강화된 오류 처리 및 검증)
+    """
     try:
         # 요청 데이터 검증
         if not request.is_json:
+            print("JSON 형식이 아닌 요청 수신")
             return jsonify({
                 "error": "JSON 형식의 요청이 필요합니다.",
                 "name": "",
@@ -547,6 +551,20 @@ def generate_recipe_or_reject():
                 "substituteFailure": True
             }), 400
 
+        # 같은 재료인지 확인
+        if ori.lower() == sub.lower():
+            error_msg = f"같은 재료({ori})로는 대체할 수 없습니다."
+            print(f"동일 재료 대체 시도: {error_msg}")
+            return jsonify({
+                "error": error_msg,
+                "name": recipe,
+                "description": error_msg,
+                "ingredients": [],
+                "instructions": [],
+                "user": None,
+                "substituteFailure": True
+            }), 200
+
         # 유사도 검사
         try:
             print(f"유사도 검사 시작: '{ori}' vs '{sub}'")
@@ -563,24 +581,28 @@ def generate_recipe_or_reject():
                 "instructions": [],
                 "user": None,
                 "substituteFailure": True
-            }), 400
+            }), 200
 
         # 유사도가 낮은 경우 (임계값: 0.6)
-        if similarity_score < 0.6:
-            print(f"유사도 점수가 낮음: {similarity_score} < 0.6")
+        SIMILARITY_THRESHOLD = 0.6
+        if similarity_score < SIMILARITY_THRESHOLD:
+            error_msg = f"{ori}를 {sub}로 대체하는 것은 적절하지 않습니다 (유사도: {similarity_score:.2f}). 재료의 특성이 너무 달라 맛과 식감에 큰 영향을 줄 수 있습니다."
+            print(f"유사도 점수가 낮음: {similarity_score} < {SIMILARITY_THRESHOLD}")
             return jsonify({
                 "name": recipe,
-                "description": f"{ori}를 {sub}로 대체하는 것은 적절하지 않아 레시피를 생성할 수 없습니다. (유사도: {similarity_score:.2f})",
+                "description": error_msg,
                 "ingredients": [],
                 "instructions": [],
                 "user": None,
-                "substituteFailure": True
+                "substituteFailure": True,
+                "similarityScore": similarity_score,
+                "threshold": SIMILARITY_THRESHOLD
             }), 200
 
         # 기존 재료에서 대체 재료 찾기 및 업데이트
         updated_ingredients = update_ingredients_with_substitute(original_ingredients, ori, sub)
         
-        # 기존 조리법에서 재료명 업데이트
+        # 기존 조리법에서 재료명 업데이트 (강화된 버전)
         updated_instructions = update_instructions_with_substitute(original_instructions, ori, sub)
         
         # 대체 재료 수량 추정 (LLM 사용)
@@ -596,6 +618,24 @@ def generate_recipe_or_reject():
         # 레시피 설명 업데이트
         updated_description = f"{ori}를 {sub}로 대체한 {recipe}입니다. 대체 재료로 인한 맛과 식감의 변화를 고려하여 조리해주세요."
 
+        # 대체 재료가 실제로 포함되었는지 검증
+        substitute_found = any(
+            sub.lower() in ingredient.get("name", "").lower() 
+            for ingredient in updated_ingredients
+        )
+        
+        if not substitute_found:
+            error_msg = f"대체 재료 '{sub}'가 최종 재료 목록에 포함되지 않았습니다. 레시피 생성에 실패했습니다."
+            print(f"대체 재료 미포함: {error_msg}")
+            return jsonify({
+                "name": recipe,
+                "description": error_msg,
+                "ingredients": [],
+                "instructions": [],
+                "user": None,
+                "substituteFailure": True
+            }), 200
+
         # 성공적인 응답 구성
         response_json = {
             "name": f"{sub}를 사용한 {recipe}",
@@ -608,7 +648,8 @@ def generate_recipe_or_reject():
                 "original": ori,
                 "substitute": sub,
                 "similarityScore": similarity_score,
-                "estimatedAmount": substitute_amount
+                "estimatedAmount": substitute_amount,
+                "threshold": SIMILARITY_THRESHOLD
             }
         }
 
@@ -633,7 +674,7 @@ def generate_recipe_or_reject():
 
 def update_ingredients_with_substitute(original_ingredients, ori, sub):
     """
-    기존 재료 리스트에서 원재료를 대체재료로 교체
+    기존 재료 리스트에서 원재료를 대체재료로 교체 (강화된 버전)
     """
     updated_ingredients = []
     substitute_found = False
@@ -642,8 +683,16 @@ def update_ingredients_with_substitute(original_ingredients, ori, sub):
         ingredient_name = ingredient.get("name", "").lower()
         ori_lower = ori.lower()
         
-        # 원재료와 일치하는지 확인 (부분 일치 포함)
-        if ori_lower in ingredient_name or ingredient_name in ori_lower:
+        # 원재료와 일치하는지 확인 (부분 일치 및 정확 일치)
+        is_match = (
+            ori_lower == ingredient_name or  # 정확 일치
+            ori_lower in ingredient_name or  # 원재료가 재료명에 포함
+            ingredient_name in ori_lower or  # 재료명이 원재료에 포함
+            # 공백 및 특수문자 제거 후 비교
+            ori_lower.replace(" ", "").replace("-", "") == ingredient_name.replace(" ", "").replace("-", "")
+        )
+        
+        if is_match:
             # 대체 재료로 교체
             updated_ingredient = {
                 "name": sub,
@@ -669,20 +718,48 @@ def update_ingredients_with_substitute(original_ingredients, ori, sub):
 
 def update_instructions_with_substitute(original_instructions, ori, sub):
     """
-    기존 조리법에서 원재료 언급을 대체재료로 교체
+    기존 조리법에서 원재료 언급을 대체재료로 교체 (강화된 정규표현식 사용)
     """
     updated_instructions = []
     
     for instruction in original_instructions:
         instruction_text = instruction.get("instruction", "")
         
-        # 재료명을 대소문자 구분 없이 교체
-        updated_text = re.sub(
-            re.escape(ori), 
-            sub, 
-            instruction_text, 
-            flags=re.IGNORECASE
-        )
+        if not instruction_text:
+            updated_instructions.append(instruction.copy())
+            continue
+        
+        updated_text = instruction_text
+        
+        try:
+            # 1. 정확히 일치하는 경우 (단어 경계 사용)
+            import re
+            exact_pattern = r'(?i)\b' + re.escape(ori) + r'\b'
+            updated_text = re.sub(exact_pattern, sub, updated_text)
+            
+            # 2. 부분 일치하는 경우 (예: "무염버터" -> "무염마가린")
+            if ori != sub and ori.lower() in updated_text.lower():
+                partial_pattern = r'(?i)' + re.escape(ori)
+                # 이미 대체되지 않았고, 대체재료가 포함되지 않은 경우에만 교체
+                if ori.lower() in updated_text.lower() and sub.lower() not in updated_text.lower():
+                    updated_text = re.sub(partial_pattern, sub, updated_text)
+            
+            # 3. 공백이나 하이픈이 포함된 재료명 처리
+            ori_variants = [
+                ori,
+                ori.replace(" ", ""),
+                ori.replace("-", ""),
+                ori.replace("_", "")
+            ]
+            
+            for variant in ori_variants:
+                if variant != ori and variant.lower() in updated_text.lower():
+                    variant_pattern = r'(?i)\b' + re.escape(variant) + r'\b'
+                    updated_text = re.sub(variant_pattern, sub, updated_text)
+            
+        except Exception as regex_error:
+            print(f"정규표현식 처리 오류 (원본 유지): {regex_error}")
+            updated_text = instruction_text
         
         # 업데이트된 조리법 저장
         updated_instruction = instruction.copy()
@@ -690,20 +767,23 @@ def update_instructions_with_substitute(original_instructions, ori, sub):
         updated_instructions.append(updated_instruction)
         
         if updated_text != instruction_text:
-            print(f"조리법 업데이트됨: {ori} -> {sub}")
+            print(f"조리법 업데이트됨: '{ori}' -> '{sub}'")
+            print(f"  원본: {instruction_text[:50]}...")
+            print(f"  수정: {updated_text[:50]}...")
     
     return updated_instructions
 
 
 def estimate_substitute_amount(ori, sub, ingredients_list):
     """
-    LLM을 사용하여 대체 재료의 적절한 수량 추정
+    LLM을 사용하여 대체 재료의 적절한 수량 추정 (개선된 버전)
     """
     try:
         # 기존 재료에서 원재료의 수량 찾기
         original_amount = "적당량"
         for ingredient in ingredients_list:
-            if ori.lower() in ingredient.get("name", "").lower():
+            ingredient_name = ingredient.get("name", "").lower()
+            if ori.lower() in ingredient_name or ingredient_name in ori.lower():
                 original_amount = ingredient.get("amount", "적당량")
                 break
         
@@ -713,24 +793,39 @@ def estimate_substitute_amount(ori, sub, ingredients_list):
         
         답변은 오직 수량만 간단히 답해주세요. 예: "2큰술", "100g", "1개", "적당량"
         설명이나 부가적인 내용은 포함하지 마세요.
+        
+        중요: 재료의 밀도, 단맛, 짠맛 등의 특성 차이를 고려해주세요.
         """
         
         result = qa_chain.invoke({"question": query})
         estimated_amount = result["answer"].strip()
         
-        # 응답에서 수량 부분만 추출
-        amount_match = re.search(r'(\d+(?:\.\d+)?\s*(?:큰술|작은술|컵|개|g|kg|ml|l|조각|편|대|뿌리|적당량))', estimated_amount)
-        if amount_match:
-            return amount_match.group(1)
-        elif "적당량" in estimated_amount:
+        # 응답에서 수량 부분만 추출 (개선된 정규표현식)
+        import re
+        amount_patterns = [
+            r'(\d+(?:\.\d+)?\s*(?:큰술|작은술|컵|개|g|kg|ml|l|조각|편|대|뿌리|적당량|소량|약간))',
+            r'(적당량|소량|약간)',
+            r'(\d+(?:\.\d+)?)\s*(큰술|작은술|컵|개|g|kg|ml|l|조각|편|대|뿌리)'
+        ]
+        
+        for pattern in amount_patterns:
+            amount_match = re.search(pattern, estimated_amount, re.IGNORECASE)
+            if amount_match:
+                extracted_amount = amount_match.group(1) if len(amount_match.groups()) == 1 else f"{amount_match.group(1)}{amount_match.group(2)}"
+                print(f"LLM 수량 추정 성공: {ori} {original_amount} -> {sub} {extracted_amount}")
+                return extracted_amount
+        
+        # 패턴 매칭 실패 시 기본값 반환
+        if "적당량" in estimated_amount or "소량" in estimated_amount or "약간" in estimated_amount:
             return "적당량"
         else:
+            print(f"LLM 수량 추정 실패, 원본 수량 사용: {original_amount}")
             return original_amount  # 추정 실패 시 원래 수량 사용
             
     except Exception as e:
         print(f"수량 추정 오류: {str(e)}")
         return "적당량"
-
+    
 ######################## 영양소 출력 LLM #####################################
 """
     입력 (예시)
