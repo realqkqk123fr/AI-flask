@@ -496,20 +496,12 @@ def process_instruction_steps(instructions_raw):
 
 @app.route('/generate_recipe_or_reject', methods=['POST'])
 def generate_recipe_or_reject():
-    """
-    대체 재료 요청 처리 API (강화된 오류 처리 및 검증)
-    """
     try:
         # 요청 데이터 검증
         if not request.is_json:
             print("JSON 형식이 아닌 요청 수신")
             return jsonify({
                 "error": "JSON 형식의 요청이 필요합니다.",
-                "name": "",
-                "description": "요청 형식이 올바르지 않습니다.",
-                "ingredients": [],
-                "instructions": [],
-                "user": None,
                 "substituteFailure": True
             }), 400
 
@@ -520,7 +512,7 @@ def generate_recipe_or_reject():
         sub = data.get("sub", "").strip() if data.get("sub") else ""
         recipe = data.get("recipe", "").strip() if data.get("recipe") else ""
         
-        # 새로 추가: 기존 레시피 데이터
+        # 기존 레시피 데이터
         original_recipe_data = data.get("originalRecipe", {})
         original_ingredients = original_recipe_data.get("ingredients", [])
         original_instructions = original_recipe_data.get("instructions", [])
@@ -530,24 +522,11 @@ def generate_recipe_or_reject():
         print(f"기존 레시피 재료 수: {len(original_ingredients)}")
 
         # 필수 필드 검증
-        missing_fields = []
-        if not ori:
-            missing_fields.append("원재료(ori)")
-        if not sub:
-            missing_fields.append("대체재료(sub)")
-        if not recipe:
-            missing_fields.append("레시피명(recipe)")
-
-        if missing_fields:
-            error_msg = f"다음 필드가 누락되었습니다: {', '.join(missing_fields)}"
+        if not ori or not sub or not recipe:
+            error_msg = "원재료, 대체재료, 레시피명을 모두 입력해주세요."
             print(f"필수 필드 누락: {error_msg}")
             return jsonify({
                 "error": error_msg,
-                "name": recipe or "알 수 없는 레시피",
-                "description": f"{ori}를 {sub}로 대체하기 위한 정보가 부족합니다.",
-                "ingredients": [],
-                "instructions": [],
-                "user": None,
                 "substituteFailure": True
             }), 400
 
@@ -557,99 +536,39 @@ def generate_recipe_or_reject():
             print(f"동일 재료 대체 시도: {error_msg}")
             return jsonify({
                 "error": error_msg,
-                "name": recipe,
-                "description": error_msg,
-                "ingredients": [],
-                "instructions": [],
-                "user": None,
                 "substituteFailure": True
             }), 200
 
-        # 유사도 검사
-        try:
-            print(f"유사도 검사 시작: '{ori}' vs '{sub}'")
-            similarity_score = check_replace(ori, sub)
-            print(f"유사도 점수: {similarity_score}")
-        except ValueError as e:
-            error_msg = f"재료 정보를 찾을 수 없습니다: {str(e)}"
-            print(f"유사도 검사 오류: {error_msg}")
-            return jsonify({
-                "error": error_msg,
-                "name": recipe,
-                "description": f"'{ori}' 또는 '{sub}' 재료에 대한 정보가 데이터베이스에 없어 대체 재료 분석을 수행할 수 없습니다.",
-                "ingredients": [],
-                "instructions": [],
-                "user": None,
-                "substituteFailure": True
-            }), 200
-
-        # 유사도가 낮은 경우 (임계값: 0.6)
-        SIMILARITY_THRESHOLD = 0.6
-        if similarity_score < SIMILARITY_THRESHOLD:
-            error_msg = f"{ori}를 {sub}로 대체하는 것은 적절하지 않습니다 (유사도: {similarity_score:.2f}). 재료의 특성이 너무 달라 맛과 식감에 큰 영향을 줄 수 있습니다."
-            print(f"유사도 점수가 낮음: {similarity_score} < {SIMILARITY_THRESHOLD}")
+        # LLM을 사용한 대체 가능성 평가 및 레시피 생성
+        is_substitute_possible, updated_recipe = evaluate_substitute_with_llm(ori, sub, recipe, original_recipe_data)
+        
+        if not is_substitute_possible:
+            # 대체 불가능으로 판단된 경우
+            error_msg = f"{ori}를 {sub}로 대체하는 것은 적절하지 않습니다. {updated_recipe.get('reason', '재료의 특성이 너무 달라 맛과 식감에 큰 영향을 줄 수 있습니다.')}"
+            print(f"LLM 대체 불가능 판단: {error_msg}")
+            
+            # 응답에 명시적으로 substituteFailure 플래그 설정
             return jsonify({
                 "name": recipe,
                 "description": error_msg,
                 "ingredients": [],
                 "instructions": [],
-                "user": None,
-                "substituteFailure": True,
-                "similarityScore": similarity_score,
-                "threshold": SIMILARITY_THRESHOLD
+                "substituteFailure": True,  # 명시적 실패 플래그
+                "reason": updated_recipe.get("reason", "")
             }), 200
 
-        # 기존 재료에서 대체 재료 찾기 및 업데이트
-        updated_ingredients = update_ingredients_with_substitute(original_ingredients, ori, sub)
-        
-        # 기존 조리법에서 재료명 업데이트 (강화된 버전)
-        updated_instructions = update_instructions_with_substitute(original_instructions, ori, sub)
-        
-        # 대체 재료 수량 추정 (LLM 사용)
-        substitute_amount = estimate_substitute_amount(ori, sub, updated_ingredients)
-        
-        # 업데이트된 재료 리스트에서 대체 재료의 수량 조정
-        for ingredient in updated_ingredients:
-            if ingredient.get("name", "").lower() == sub.lower():
-                if substitute_amount and substitute_amount != "적당량":
-                    ingredient["amount"] = substitute_amount
-                break
-
-        # 레시피 설명 업데이트
-        updated_description = f"{ori}를 {sub}로 대체한 {recipe}입니다. 대체 재료로 인한 맛과 식감의 변화를 고려하여 조리해주세요."
-
-        # 대체 재료가 실제로 포함되었는지 검증
-        substitute_found = any(
-            sub.lower() in ingredient.get("name", "").lower() 
-            for ingredient in updated_ingredients
-        )
-        
-        if not substitute_found:
-            error_msg = f"대체 재료 '{sub}'가 최종 재료 목록에 포함되지 않았습니다. 레시피 생성에 실패했습니다."
-            print(f"대체 재료 미포함: {error_msg}")
-            return jsonify({
-                "name": recipe,
-                "description": error_msg,
-                "ingredients": [],
-                "instructions": [],
-                "user": None,
-                "substituteFailure": True
-            }), 200
-
-        # 성공적인 응답 구성
+        # 대체 가능한 경우 응답 구성
         response_json = {
-            "name": f"{sub}를 사용한 {recipe}",
-            "description": updated_description,
-            "ingredients": updated_ingredients,
-            "instructions": updated_instructions,
-            "user": None,
-            "substituteFailure": False,
+            "name": updated_recipe.get("name", f"{sub}를 사용한 {recipe}"),
+            "description": updated_recipe.get("description", f"{ori}를 {sub}로 대체한 {recipe}입니다."),
+            "ingredients": updated_recipe.get("ingredients", []),
+            "instructions": updated_recipe.get("instructions", []),
+            "substituteFailure": False,  # 명시적 성공 플래그
             "substitutionInfo": {
                 "original": ori,
                 "substitute": sub,
-                "similarityScore": similarity_score,
-                "estimatedAmount": substitute_amount,
-                "threshold": SIMILARITY_THRESHOLD
+                "estimatedAmount": updated_recipe.get("estimatedAmount", "적당량"),
+                "substitutionReason": updated_recipe.get("substitutionReason", "")
             }
         }
 
@@ -663,14 +582,299 @@ def generate_recipe_or_reject():
         
         return jsonify({
             "error": f"요청 처리 중 오류 발생: {str(e)}",
-            "name": "알 수 없는 레시피",
-            "description": "대체 재료 요청 처리 중 예상치 못한 오류가 발생했습니다.",
-            "ingredients": [],
-            "instructions": [],
-            "user": None,
             "substituteFailure": True
         }), 500
+    
+def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, recipe_name, original_recipe=None):
+    """
+    LLM을 사용하여 대체 가능성을 평가하고 대체 레시피를 생성
+    
+    Args:
+        original_ingredient: 원래 재료
+        substitute_ingredient: 대체 재료
+        recipe_name: 레시피 이름
+        original_recipe: 원본 레시피 데이터 (있는 경우)
+        
+    Returns:
+        tuple: (대체 가능 여부, 결과 데이터)
+    """
+    try:
+        # 원본 레시피 데이터를 문자열로 변환
+        recipe_context = ""
+        if original_recipe:
+            recipe_context = "기존 레시피 정보:\n"
+            
+            # 재료 정보 추가
+            if "ingredients" in original_recipe and original_recipe["ingredients"]:
+                recipe_context += "재료:\n"
+                for ing in original_recipe["ingredients"]:
+                    name = ing.get("name", "")
+                    amount = ing.get("amount", "적당량")
+                    recipe_context += f"- {name}: {amount}\n"
+            
+            # 조리법 정보 추가
+            if "instructions" in original_recipe and original_recipe["instructions"]:
+                recipe_context += "\n조리법:\n"
+                for i, inst in enumerate(original_recipe["instructions"]):
+                    instruction = inst.get("instruction", "")
+                    recipe_context += f"{i+1}. {instruction}\n"
+        
+        # LLM에 보낼 프롬프트 구성
+        prompt = f"""
+        당신은 요리 전문가입니다. 레시피에서 재료 대체 가능성을 판단하고 대체 레시피를 생성해야 합니다.
+        
+        레시피: {recipe_name}
+        원재료: {original_ingredient}
+        대체재료: {substitute_ingredient}
+        
+        {recipe_context}
+        
+        다음 단계를 수행하세요:
+        
+        1. 먼저 {original_ingredient}를 {substitute_ingredient}로 대체할 수 있는지 판단하세요. 
+           - 맛, 식감, 조리 방법, 영양소 등을 고려하세요.
+           - 대체 시 예상되는 결과와 영향을 분석하세요.
+        
+        2. 대체 가능성 판단 결과를 다음 형식으로 제공하세요:
+           - 대체 가능: [가능/불가능]
+           - 이유: [대체 가능/불가능한 상세 이유]
+           - 권장 수량: [원재료 대비 적절한 대체재료 수량]
+        
+        3. 대체 가능하다고 판단되면 새로운 레시피를 생성하세요:
+           - 이름: [대체 재료를 반영한 레시피 이름]
+           - 설명: [대체 재료를 사용한 레시피 설명]
+           - 재료:
+             * [재료1]: [수량]
+             * [재료2]: [수량]
+             ...
+           - 조리법:
+             1. [첫 번째 조리 단계]
+             2. [두 번째 조리 단계]
+             ...
+        
+        4. 대체 불가능하다고 판단되면 왜 불가능한지 구체적인 이유를 설명하세요.
+        
+        JSON 형식으로 응답하지 말고, 요청한 형식으로만 정확히 답변하세요.
+        """
+        
+        # LLM에 요청 보내기
+        result = qa_chain.invoke({"question": prompt})
+        response_text = result["answer"]
+        print(f"LLM 응답:\n{response_text}")
+        
+        # 응답 파싱
+        # 대체 가능성 확인 - 보다 철저한 분석 적용
+        # 레시피를 제대로 생성했는지 확인 - 정규 표현식 패턴으로 변경
+        has_recipe_format = False
+        
+        # 다양한 레시피 형식 패턴 확인
+        recipe_patterns = [
+            # 표준 형식
+            r'name\s*:',
+            r'description\s*:',
+            r'ingredients\s*:',
+            r'instructions\s*:',
+            
+            # 마크다운 형식
+            r'\*\s*name\s*:',
+            r'\*\s*description\s*:',
+            r'\*\s*ingredients\s*:',
+            r'\*\s*instructions\s*:',
+            
+            # 볼드 마크다운 형식
+            r'\*\*\s*name\s*:\s*\*\*',
+            r'\*\*\s*description\s*:\s*\*\*',
+            r'\*\*\s*ingredients\s*:\s*\*\*',
+            r'\*\*\s*instructions\s*:\s*\*\*'
+        ]
+        
+        # 최소 2개 이상의 레시피 형식 패턴이 발견되면 유효한 레시피로 간주
+        pattern_count = 0
+        for pattern in recipe_patterns:
+            if re.search(pattern, response_text, re.IGNORECASE):
+                pattern_count += 1
+        
+        has_recipe_format = pattern_count >= 2
+        
+        # 또는 "단계" 패턴이 여러 개 발견되면 유효한 레시피로 간주
+        step_patterns = re.findall(r'###\s*\d+단계\s*###', response_text)
+        if len(step_patterns) >= 3:  # 최소 3단계 이상
+            has_recipe_format = True
+        
+        # 긍정적인 대체 가능 표현 검사
+        positive_indicators = [
+            "대체 가능합니다",
+            "대체할 수 있습니다",
+            "사용해도 됩니다",
+            "문제 없습니다",
+            "적합합니다",
+            "좋은 대체재입니다",
+            "충분히 가능합니다",
+            "대체 가능성 분석",
+            "대체 가능:"
+        ]
+        
+        has_positive_indicator = False
+        for indicator in positive_indicators:
+            if indicator.lower() in response_lower:
+                has_positive_indicator = True
+                print(f"긍정 표현 발견: '{indicator}'")
+                break
+        
+        # 첫 문단이 "네", "예"로 시작하는지 확인
+        first_paragraph = response_text.split('\n')[0].strip().lower()
+        starts_positive = first_paragraph.startswith('네') or first_paragraph.startswith('예') or '대체 가능' in first_paragraph
+        
+        # 최종 판단 - 대체 가능성 판단 로직 변경
+        # 1. 명시적 부정 표현이 없고
+        # 2. (레시피 형식이 있거나 긍정 표현이 있거나 첫 문단이 긍정적으로 시작)
+        is_possible = not found_negative and (has_recipe_format or has_positive_indicator or starts_positive)
+        
+        # 디버깅 정보
+        first_line = response_text.split('\n')[0][:70] if response_text else ""
+        print(f"LLM 응답 첫 문장: {first_line}...")
+        print(f"레시피 형식 확인 결과: {has_recipe_format}")
+        print(f"긍정 표현 확인 결과: {has_positive_indicator}")
+        print(f"긍정적 시작 확인 결과: {starts_positive}")
+        print(f"대체 가능 여부 최종 판단 결과: {is_possible}")
+            
+        if is_possible:
+            print(f"LLM 대체 가능 판단: {original_ingredient}를 {substitute_ingredient}로 대체할 수 있습니다.")
+            # 대체 가능한 경우 레시피 파싱
+            recipe_data = {}
+            
+            # 레시피 이름 추출
+            name_match = re.search(r"이름:\s*(.+?)(?=$|\n)", response_text, re.MULTILINE)
+            if name_match:
+                recipe_data["name"] = name_match.group(1).strip()
+            else:
+                recipe_data["name"] = f"{substitute_ingredient}를 사용한 {recipe_name}"
+            
+            # 설명 추출
+            desc_match = re.search(r"설명:\s*(.+?)(?=$|\n)", response_text, re.MULTILINE)
+            if desc_match:
+                recipe_data["description"] = desc_match.group(1).strip()
+            else:
+                recipe_data["description"] = f"{original_ingredient}를 {substitute_ingredient}로 대체한 {recipe_name}입니다."
+            
+            # 재료 추출
+            ingredients = []
+            ingredients_section = re.search(r"재료:(.*?)(?=조리법:|\Z)", response_text, re.DOTALL)
+            if ingredients_section:
+                ingredients_text = ingredients_section.group(1).strip()
+                ingredient_matches = re.findall(r"\*\s*([^:]+):\s*(.+?)(?=$|\n)", ingredients_text)
+                
+                for ing_name, ing_amount in ingredient_matches:
+                    ingredients.append({
+                        "name": ing_name.strip(),
+                        "amount": ing_amount.strip()
+                    })
+            
+            recipe_data["ingredients"] = ingredients
+            
+            # 조리법 추출 부분 수정
+            instructions = []
+            instructions_section = re.search(r"- instructions :(.*?)(?=\Z|\n\n)", response_text, re.DOTALL)
+            if instructions_section:
+                instructions_text = instructions_section.group(1).strip()
+                
+                # 1. 단계별 패턴 찾기 시도
+                instruction_matches = re.findall(r"###\s*(\d+)단계\s*###\s*(.*?)(?=###|\Z)", instructions_text, re.DOTALL)
+                
+                # 단계 패턴 찾기에 실패했을 때 추가 시도
+                if not instruction_matches:
+                    # 2. 번호 리스트 형식 찾기 시도
+                    instruction_matches = re.findall(r"(\d+)\.\s*(.*?)(?=\d+\.|\Z)", instructions_text, re.DOTALL)
+                
+                # 그래도 찾지 못한 경우 단순 줄바꿈으로 분리
+                if not instruction_matches:
+                    lines = instructions_text.split('\n')
+                    instruction_matches = [(str(i+1), line.strip()) for i, line in enumerate(lines) if line.strip()]
 
+                for step_num, instruction_text in instruction_matches:
+                    # 공백, 특수문자 등 정리
+                    clean_text = instruction_text.strip()
+                    if clean_text:  # 내용이 있는 경우만 추가
+                        cooking_time_mins, cooking_time_seconds = extract_cooking_time(clean_text)
+                        instructions.append({
+                            "instruction": clean_text,
+                            "cookingTime": cooking_time_mins,
+                            "cookingTimeSeconds": cooking_time_seconds,
+                            "stepNumber": int(step_num)
+                        })
+
+            # 조리법이 여전히 비어있는 경우 전체 응답에서 추출 시도
+            if not instructions:
+                print("조리법을 찾지 못했습니다. 전체 텍스트에서 추출을 시도합니다.")
+                # 전체 텍스트에서 조리법으로 보이는 부분 추출
+                instruction_lines = []
+                
+                # 응답에서 조리법으로 보이는 부분 찾기
+                lines = response_text.split('\n')
+                instruction_mode = False
+                
+                for i, line in enumerate(lines):
+                    # 조리법 섹션 시작 감지
+                    if '단계' in line or '조리법' in line or '만드는 법' in line or '요리 방법' in line:
+                        instruction_mode = True
+                        continue
+                        
+                    # 조리법 모드이고 내용이 있는 경우
+                    if instruction_mode and line.strip():
+                        # 다음 섹션 시작이면 중단
+                        if line.startswith('**') or line.startswith('- '):
+                            instruction_mode = False
+                        else:
+                            instruction_lines.append(line.strip())
+                
+                # 추출된 조리법 줄을 단계별로 변환
+                for i, line in enumerate(instruction_lines):
+                    cooking_time_mins, cooking_time_seconds = extract_cooking_time(line)
+                    instructions.append({
+                        "instruction": line,
+                        "cookingTime": cooking_time_mins,
+                        "cookingTimeSeconds": cooking_time_seconds,
+                        "stepNumber": i + 1
+                    })
+
+            print(f"추출된 조리법 단계: {len(instructions)}개")
+            for i, inst in enumerate(instructions):
+                print(f"단계 {i+1}: {inst['instruction'][:50]}...")
+
+            recipe_data["instructions"] = instructions
+            
+            # 대체 수량 추출
+            amount_match = re.search(r"권장 수량:\s*(.+?)(?=$|\n)", response_text)
+            if amount_match:
+                recipe_data["estimatedAmount"] = amount_match.group(1).strip()
+            
+            # 대체 이유 추출
+            reason_match = re.search(r"이유:\s*(.+?)(?=$|\n)", response_text)
+            if reason_match:
+                recipe_data["substitutionReason"] = reason_match.group(1).strip()
+            
+            return True, recipe_data
+        else:
+            print(f"LLM 대체 불가능 판단: {original_ingredient}를 {substitute_ingredient}로 대체하는 것은 적절하지 않습니다. **")
+            # 대체 불가능한 경우
+            reason = ""
+            reason_match = re.search(r"이유:\s*(.+?)(?=$|\n)", response_text)
+            if reason_match:
+                reason = reason_match.group(1).strip()
+            else:
+                # 이유가 명시적으로 표시되지 않은 경우 전체 응답에서 관련 부분 추출
+                impossible_section = re.search(r"대체 불가능.*", response_text, re.DOTALL)
+                if impossible_section:
+                    reason = impossible_section.group(0)
+                else:
+                    reason = f"{original_ingredient}를 {substitute_ingredient}로 대체하는 것은 권장되지 않습니다."
+            
+            return False, {"reason": reason}
+    
+    except Exception as e:
+        print(f"LLM 평가 중 오류: {str(e)}")
+        traceback.print_exc()
+        return False, {"reason": f"평가 중 오류가 발생했습니다: {str(e)}"}
 
 def update_ingredients_with_substitute(original_ingredients, ori, sub):
     """
