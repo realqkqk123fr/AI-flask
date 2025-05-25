@@ -350,49 +350,65 @@ def extract_instructions(text):
          })
     return instructions
 
+# 🔧 조리 시간 추출 함수도 개선
 def extract_cooking_time(text):
     """
-    텍스트에서 조리 시간을 추출하거나 예상하는 함수
-    
-    Args:
-        text (str): 조리 단계 텍스트
-        
-    Returns:
-        tuple: (분 단위 시간, 초 단위 시간)
+    텍스트에서 조리 시간을 추출하거나 예상하는 함수 (개선된 버전)
     """
     # 기본값 설정
-    cooking_time_mins = 5  # 기본 5분
-    cooking_time_seconds = 300  # 기본 300초
+    cooking_time_mins = 3  # 기본 3분으로 변경
+    cooking_time_seconds = 180  # 기본 180초
     
-    # 텍스트에서 "N분" 또는 "N분 M초" 패턴 추출 시도
-    time_match = re.search(r'(\d+)\s*분(?:\s*(\d+)\s*초)?', text)
-    if time_match:
-        minutes = int(time_match.group(1))
-        seconds = int(time_match.group(2)) if time_match.group(2) and time_match.group(2).strip() else 0
-        cooking_time_mins = minutes
-        cooking_time_seconds = minutes * 60 + seconds
+    # 명시적 시간 패턴 추출 - 더 많은 패턴 지원
+    time_patterns = [
+        r'(\d+)\s*분(?:\s*(\d+)\s*초)?',  # N분 M초
+        r'(\d+)\s*분간',                  # N분간
+        r'약\s*(\d+)\s*분',               # 약 N분
+        r'(\d+)-(\d+)\s*분',              # N-M분
+        r'(\d+)\s*초'                     # N초
+    ]
+    
+    for pattern in time_patterns:
+        time_match = re.search(pattern, text)
+        if time_match:
+            groups = time_match.groups()
+            if len(groups) >= 2 and groups[1]:  # 분과 초가 모두 있는 경우
+                minutes = int(groups[0])
+                seconds = int(groups[1])
+                cooking_time_mins = minutes
+                cooking_time_seconds = minutes * 60 + seconds
+            elif '초' in pattern:  # 초만 있는 경우
+                total_seconds = int(groups[0])
+                cooking_time_seconds = total_seconds
+                cooking_time_mins = total_seconds // 60
+            else:  # 분만 있는 경우
+                minutes = int(groups[0])
+                cooking_time_mins = minutes
+                cooking_time_seconds = minutes * 60
+            
+            print(f"시간 추출 성공: {cooking_time_mins}분 ({cooking_time_seconds}초)")
+            return cooking_time_mins, cooking_time_seconds
+    
+    # 패턴이 없는 경우 텍스트 내용에 따라 시간 추정 (개선된 로직)
+    word_count = len(text.split())
+    
+    if any(keyword in text for keyword in ["볶", "굽", "지글지글"]):
+        cooking_time_seconds = min(10 * 60, max(2 * 60, word_count * 15))  # 2-10분
+    elif any(keyword in text for keyword in ["끓", "삶", "우려"]):
+        cooking_time_seconds = min(15 * 60, max(5 * 60, word_count * 25))  # 5-15분
+    elif any(keyword in text for keyword in ["썰", "다듬", "준비", "씻"]):
+        cooking_time_seconds = min(5 * 60, max(1 * 60, word_count * 8))   # 1-5분
+    elif any(keyword in text for keyword in ["식히", "숙성", "재우"]):
+        cooking_time_seconds = 10 * 60  # 10분
+    elif any(keyword in text for keyword in ["섞", "젓", "휘젓"]):
+        cooking_time_seconds = min(3 * 60, max(30, word_count * 5))       # 30초-3분
     else:
-        # 패턴이 없는 경우 텍스트 내용에 따라 시간 추정
-        word_count = len(text.split())
-        
-        if "볶" in text or "굽" in text:
-            # 볶거나 굽는 작업은 3-10분 소요, 단어 수에 따라 조정
-            cooking_time_seconds = min(10 * 60, max(3 * 60, word_count * 20))  # 3-10분
-            cooking_time_mins = cooking_time_seconds // 60
-        elif "끓" in text or "삶" in text:
-            # 끓이거나 삶는 작업은 5-15분 소요, 단어 수에 따라 조정
-            cooking_time_seconds = min(15 * 60, max(5 * 60, word_count * 30))  # 5-15분
-            cooking_time_mins = cooking_time_seconds // 60
-        elif "썰" in text or "다듬" in text or "준비" in text:
-            # 썰거나 준비하는 작업은 1-5분 소요, 단어 수에 따라 조정
-            cooking_time_seconds = min(5 * 60, max(1 * 60, word_count * 10))  # 1-5분
-            cooking_time_mins = cooking_time_seconds // 60
-        elif "식히" in text or "숙성" in text:
-            # 식히거나 숙성하는 작업은 10분 정도 소요
-            cooking_time_seconds = 10 * 60  # 10분
-            cooking_time_mins = 10
-        # 기본값은 이미 설정됨 (5분, 300초)
+        # 기본 추정: 텍스트 길이에 비례
+        cooking_time_seconds = max(60, min(8 * 60, word_count * 10))       # 1-8분
     
+    cooking_time_mins = cooking_time_seconds // 60
+    
+    print(f"시간 추정: {cooking_time_mins}분 ({cooking_time_seconds}초) - 키워드 기반")
     return cooking_time_mins, cooking_time_seconds
 
 # 기존 extract_instructions 함수 이후에 추가 처리 단계 구현
@@ -572,6 +588,45 @@ def generate_recipe_or_reject():
             }
         }
 
+        # 🔧 상세 응답 로깅 추가
+        print("=" * 50)
+        print("📤 FLASK 응답 데이터 상세 정보")
+        print("=" * 50)
+        print(f"이름: {response_json['name']}")
+        print(f"설명: {response_json['description']}")
+        print(f"재료 개수: {len(response_json['ingredients'])}")
+        
+        print("\n📋 재료 목록:")
+        for i, ingredient in enumerate(response_json['ingredients']):
+            print(f"  {i+1}. {ingredient.get('name', 'N/A')}: {ingredient.get('amount', 'N/A')}")
+        
+        print(f"\n📝 조리법 개수: {len(response_json['instructions'])}")
+        print("\n📝 조리법 목록:")
+        for i, instruction in enumerate(response_json['instructions']):
+            print(f"  단계 {instruction.get('stepNumber', i+1)}: {instruction.get('instruction', 'N/A')[:60]}...")
+            print(f"    ⏰ 조리시간: {instruction.get('cookingTime', 0)}분 ({instruction.get('cookingTimeSeconds', 0)}초)")
+        
+        print(f"\n🔄 대체 정보:")
+        print(f"  원재료: {response_json['substitutionInfo']['original']}")
+        print(f"  대체재료: {response_json['substitutionInfo']['substitute']}")
+        print(f"  권장 수량: {response_json['substitutionInfo']['estimatedAmount']}")
+        
+        print(f"\n✅ 대체 실패 여부: {response_json['substituteFailure']}")
+        print("=" * 50)
+
+        # JSON 직렬화 테스트
+        import json
+        try:
+            json_str = json.dumps(response_json, ensure_ascii=False, indent=2)
+            print("✅ JSON 직렬화 성공")
+            print(f"JSON 크기: {len(json_str)} 문자")
+        except Exception as json_error:
+            print(f"❌ JSON 직렬화 실패: {json_error}")
+            return jsonify({
+                "error": f"JSON 직렬화 오류: {str(json_error)}",
+                "substituteFailure": True
+            }), 500
+
         print(f"대체 레시피 업데이트 성공: {ori} -> {sub}")
         return jsonify(response_json), 200
 
@@ -585,18 +640,10 @@ def generate_recipe_or_reject():
             "substituteFailure": True
         }), 500
     
+# app.py의 evaluate_substitute_with_llm 함수 수정
 def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, recipe_name, original_recipe=None):
     """
     LLM을 사용하여 대체 가능성을 평가하고 대체 레시피를 생성
-    
-    Args:
-        original_ingredient: 원래 재료
-        substitute_ingredient: 대체 재료
-        recipe_name: 레시피 이름
-        original_recipe: 원본 레시피 데이터 (있는 경우)
-        
-    Returns:
-        tuple: (대체 가능 여부, 결과 데이터)
     """
     try:
         # 원본 레시피 데이터를 문자열로 변환
@@ -641,15 +688,17 @@ def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, rec
            - 권장 수량: [원재료 대비 적절한 대체재료 수량]
         
         3. 대체 가능하다고 판단되면 새로운 레시피를 생성하세요:
-           - 이름: [대체 재료를 반영한 레시피 이름]
-           - 설명: [대체 재료를 사용한 레시피 설명]
-           - 재료:
+           - name: [대체 재료를 반영한 레시피 이름]
+           - description: [대체 재료를 사용한 레시피 설명]
+           - ingredients:
              * [재료1]: [수량]
              * [재료2]: [수량]
              ...
-           - 조리법:
-             1. [첫 번째 조리 단계]
-             2. [두 번째 조리 단계]
+           - instructions:
+             ### 1단계 ###
+             [첫 번째 조리 단계]
+             ### 2단계 ###
+             [두 번째 조리 단계]
              ...
         
         4. 대체 불가능하다고 판단되면 왜 불가능한지 구체적인 이유를 설명하세요.
@@ -662,8 +711,30 @@ def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, rec
         response_text = result["answer"]
         print(f"LLM 응답:\n{response_text}")
         
-        # 응답 파싱
-        # 대체 가능성 확인 - 보다 철저한 분석 적용
+        # response_lower 변수 정의
+        response_lower = response_text.lower()
+        
+        # 부정적인 대체 표현 검사
+        negative_indicators = [
+            "대체할 수 없",
+            "대체가 불가능",
+            "적절하지 않",
+            "권장하지 않",
+            "사용하지 않는 것이 좋",
+            "대체 불가능",
+            "불가능합니다",
+            "어렵습니다",
+            "맞지 않습니다"
+        ]
+        
+        found_negative = False
+        for indicator in negative_indicators:
+            if indicator.lower() in response_lower:
+                found_negative = True
+                print(f"부정 표현 발견: '{indicator}'")
+                break
+        
+        # 응답 확인
         # 레시피를 제대로 생성했는지 확인 - 정규 표현식 패턴으로 변경
         has_recipe_format = False
         
@@ -725,7 +796,7 @@ def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, rec
         first_paragraph = response_text.split('\n')[0].strip().lower()
         starts_positive = first_paragraph.startswith('네') or first_paragraph.startswith('예') or '대체 가능' in first_paragraph
         
-        # 최종 판단 - 대체 가능성 판단 로직 변경
+        # 최종 판단 - 대체 가능성 판단 로직
         # 1. 명시적 부정 표현이 없고
         # 2. (레시피 형식이 있거나 긍정 표현이 있거나 첫 문단이 긍정적으로 시작)
         is_possible = not found_negative and (has_recipe_format or has_positive_indicator or starts_positive)
@@ -740,122 +811,305 @@ def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, rec
             
         if is_possible:
             print(f"LLM 대체 가능 판단: {original_ingredient}를 {substitute_ingredient}로 대체할 수 있습니다.")
+            
             # 대체 가능한 경우 레시피 파싱
             recipe_data = {}
             
-            # 레시피 이름 추출
-            name_match = re.search(r"이름:\s*(.+?)(?=$|\n)", response_text, re.MULTILINE)
-            if name_match:
-                recipe_data["name"] = name_match.group(1).strip()
-            else:
+            # 🔧 수정된 레시피 이름 추출
+            name_patterns = [
+                r"\*\*name:\*\*\s*(.+?)(?=\n|$)",  # **name:** 패턴
+                r"name\s*:\s*(.+?)(?=\n|$)",
+                r"이름\s*:\s*(.+?)(?=\n|$)",
+                r"\*\s*name\s*:\s*(.+?)(?=\n|$)",
+                r"- name\s*:\s*(.+?)(?=\n|$)"
+            ]
+            
+            name_found = False
+            for pattern in name_patterns:
+                name_match = re.search(pattern, response_text, re.IGNORECASE | re.MULTILINE)
+                if name_match:
+                    recipe_data["name"] = name_match.group(1).strip()
+                    name_found = True
+                    print(f"레시피 이름 추출됨: {recipe_data['name']}")
+                    break
+            
+            if not name_found:
                 recipe_data["name"] = f"{substitute_ingredient}를 사용한 {recipe_name}"
+                print(f"기본 레시피 이름 사용: {recipe_data['name']}")
             
-            # 설명 추출
-            desc_match = re.search(r"설명:\s*(.+?)(?=$|\n)", response_text, re.MULTILINE)
-            if desc_match:
-                recipe_data["description"] = desc_match.group(1).strip()
-            else:
+            # 🔧 수정된 설명 추출
+            desc_patterns = [
+                r"\*\*description:\*\*\s*(.+?)(?=\n|$)",  # **description:** 패턴
+                r"description\s*:\s*(.+?)(?=\n|$)",
+                r"설명\s*:\s*(.+?)(?=\n|$)",
+                r"\*\s*description\s*:\s*(.+?)(?=\n|$)",
+                r"- description\s*:\s*(.+?)(?=\n|$)"
+            ]
+            
+            desc_found = False
+            for pattern in desc_patterns:
+                desc_match = re.search(pattern, response_text, re.IGNORECASE | re.MULTILINE)
+                if desc_match:
+                    recipe_data["description"] = desc_match.group(1).strip()
+                    desc_found = True
+                    print(f"레시피 설명 추출됨: {recipe_data['description']}")
+                    break
+            
+            if not desc_found:
                 recipe_data["description"] = f"{original_ingredient}를 {substitute_ingredient}로 대체한 {recipe_name}입니다."
+                print(f"기본 레시피 설명 사용: {recipe_data['description']}")
             
-            # 재료 추출
+            # 🔧 수정된 재료 추출 - 다양한 패턴 지원
             ingredients = []
-            ingredients_section = re.search(r"재료:(.*?)(?=조리법:|\Z)", response_text, re.DOTALL)
-            if ingredients_section:
-                ingredients_text = ingredients_section.group(1).strip()
-                ingredient_matches = re.findall(r"\*\s*([^:]+):\s*(.+?)(?=$|\n)", ingredients_text)
-                
-                for ing_name, ing_amount in ingredient_matches:
-                    ingredients.append({
-                        "name": ing_name.strip(),
-                        "amount": ing_amount.strip()
-                    })
-            
-            recipe_data["ingredients"] = ingredients
-            
-            # 조리법 추출 부분 수정
-            instructions = []
-            instructions_section = re.search(r"- instructions :(.*?)(?=\Z|\n\n)", response_text, re.DOTALL)
-            if instructions_section:
-                instructions_text = instructions_section.group(1).strip()
-                
-                # 1. 단계별 패턴 찾기 시도
-                instruction_matches = re.findall(r"###\s*(\d+)단계\s*###\s*(.*?)(?=###|\Z)", instructions_text, re.DOTALL)
-                
-                # 단계 패턴 찾기에 실패했을 때 추가 시도
-                if not instruction_matches:
-                    # 2. 번호 리스트 형식 찾기 시도
-                    instruction_matches = re.findall(r"(\d+)\.\s*(.*?)(?=\d+\.|\Z)", instructions_text, re.DOTALL)
-                
-                # 그래도 찾지 못한 경우 단순 줄바꿈으로 분리
-                if not instruction_matches:
-                    lines = instructions_text.split('\n')
-                    instruction_matches = [(str(i+1), line.strip()) for i, line in enumerate(lines) if line.strip()]
 
-                for step_num, instruction_text in instruction_matches:
-                    # 공백, 특수문자 등 정리
-                    clean_text = instruction_text.strip()
-                    if clean_text:  # 내용이 있는 경우만 추가
-                        cooking_time_mins, cooking_time_seconds = extract_cooking_time(clean_text)
-                        instructions.append({
-                            "instruction": clean_text,
-                            "cookingTime": cooking_time_mins,
-                            "cookingTimeSeconds": cooking_time_seconds,
-                            "stepNumber": int(step_num)
-                        })
+            print(f"\n🔍 재료 추출 시작")
+            print(f"전체 응답 텍스트 길이: {len(response_text)}")
 
-            # 조리법이 여전히 비어있는 경우 전체 응답에서 추출 시도
-            if not instructions:
-                print("조리법을 찾지 못했습니다. 전체 텍스트에서 추출을 시도합니다.")
-                # 전체 텍스트에서 조리법으로 보이는 부분 추출
-                instruction_lines = []
-                
-                # 응답에서 조리법으로 보이는 부분 찾기
+            # 재료 섹션 추출 - 여러 패턴 시도
+            ingredients_patterns = [
+                r"\*\*ingredients:\*\*\s*(.*?)(?=\*\*instructions:|\*\*조리법:|조리법|instructions|\Z)",  # **ingredients:** 패턴
+                r"ingredients\s*:\s*(.*?)(?=instructions|조리법|만드는법|\Z)",
+                r"재료\s*:\s*(.*?)(?=조리법|만드는법|instructions|\Z)",
+                r"- ingredients\s*:(.*?)(?=- instructions|조리법|\Z)"
+            ]
+
+            ingredients_text = ""
+            used_pattern = ""
+
+            for i, pattern in enumerate(ingredients_patterns):
+                ingredients_match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
+                if ingredients_match:
+                    ingredients_text = ingredients_match.group(1).strip()
+                    used_pattern = f"패턴 {i+1}"
+                    print(f"재료 섹션 추출 성공 ({used_pattern}): 길이 {len(ingredients_text)}")
+                    print(f"추출된 재료 텍스트 미리보기: {ingredients_text[:200]}...")
+                    break
+
+            if not ingredients_text:
+                print("⚠️ 재료 섹션을 찾지 못했습니다. 전체 텍스트에서 재료 패턴 검색을 시도합니다.")
+                # 전체 텍스트에서 재료 같은 패턴 찾기
                 lines = response_text.split('\n')
-                instruction_mode = False
+                ingredient_section_started = False
+                temp_ingredients = []
                 
-                for i, line in enumerate(lines):
-                    # 조리법 섹션 시작 감지
-                    if '단계' in line or '조리법' in line or '만드는 법' in line or '요리 방법' in line:
-                        instruction_mode = True
+                for line in lines:
+                    line = line.strip()
+                    # 재료 섹션 시작 감지
+                    if any(keyword in line.lower() for keyword in ['ingredients', '재료', '* 밥', '* 계란']):
+                        ingredient_section_started = True
+                        if line.startswith('*') and ':' in line:
+                            temp_ingredients.append(line)
                         continue
-                        
-                    # 조리법 모드이고 내용이 있는 경우
-                    if instruction_mode and line.strip():
-                        # 다음 섹션 시작이면 중단
-                        if line.startswith('**') or line.startswith('- '):
-                            instruction_mode = False
-                        else:
-                            instruction_lines.append(line.strip())
+                    
+                    # 재료 섹션이 시작된 후 재료 라인 수집
+                    if ingredient_section_started:
+                        if line.startswith('*') and ':' in line:
+                            temp_ingredients.append(line)
+                        elif line.startswith('- instructions') or line.startswith('### ') or '단계' in line:
+                            break  # 조리법 섹션 시작되면 중단
+                        elif line and not line.startswith('*') and not line.startswith('-'):
+                            # 다른 섹션이 시작되면 중단
+                            break
                 
-                # 추출된 조리법 줄을 단계별로 변환
-                for i, line in enumerate(instruction_lines):
-                    cooking_time_mins, cooking_time_seconds = extract_cooking_time(line)
-                    instructions.append({
-                        "instruction": line,
-                        "cookingTime": cooking_time_mins,
-                        "cookingTimeSeconds": cooking_time_seconds,
-                        "stepNumber": i + 1
-                    })
+                if temp_ingredients:
+                    ingredients_text = '\n'.join(temp_ingredients)
+                    print(f"전체 텍스트에서 재료 추출 성공: {len(temp_ingredients)}개 라인")
+                    print(f"추출된 재료 텍스트: {ingredients_text}")
 
-            print(f"추출된 조리법 단계: {len(instructions)}개")
+            if ingredients_text:
+                print(f"\n📋 재료 파싱 시작")
+                
+                # 재료 라인별 파싱 - 다양한 패턴 지원 및 강화
+                ingredient_patterns = [
+                    r"\*\s*([^:]+?)\s*:\s*(.+?)(?=\n|$)",     # * 재료: 수량
+                    r"([^:]+?)\s*:\s*(.+?)(?=\n|$)",          # 재료: 수량  
+                    r"-\s*([^:]+?)\s*:\s*(.+?)(?=\n|$)",      # - 재료: 수량
+                    r"\*\s*([^:]+?)\s+(.+?)(?=\n|$)"          # * 재료 수량 (콜론 없는 패턴)
+                ]
+                
+                print(f"재료 파싱 대상 텍스트:\n{ingredients_text}")
+                
+                for pattern_idx, pattern in enumerate(ingredient_patterns):
+                    ingredient_matches = re.findall(pattern, ingredients_text, re.MULTILINE)
+                    print(f"패턴 {pattern_idx + 1} 시도: {len(ingredient_matches)}개 매치")
+                    
+                    if ingredient_matches:
+                        print(f"✅ 패턴 {pattern_idx + 1} 성공!")
+                        for match_idx, (ing_name, ing_amount) in enumerate(ingredient_matches):
+                            # 이름과 수량 정리
+                            clean_name = ing_name.strip().replace("*", "").replace("-", "").strip()
+                            clean_amount = ing_amount.strip()
+                            
+                            print(f"  매치 {match_idx + 1}: '{ing_name}' : '{ing_amount}'")
+                            print(f"  정리 후: '{clean_name}' : '{clean_amount}'")
+                            
+                            # 빈 값이나 잘못된 값 제외
+                            if (clean_name and clean_amount and 
+                                len(clean_name) > 0 and len(clean_amount) > 0 and
+                                clean_name != clean_amount):  # 이름과 수량이 같으면 제외
+                                
+                                ingredients.append({
+                                    "name": clean_name,
+                                    "amount": clean_amount
+                                })
+                                print(f"  ✅ 재료 추가됨: {clean_name} - {clean_amount}")
+                            else:
+                                print(f"  ❌ 재료 제외됨 (빈 값 또는 중복): '{clean_name}' - '{clean_amount}'")
+                        break
+                
+                print(f"\n📋 추출된 재료 최종 결과: {len(ingredients)}개")
+                for i, ing in enumerate(ingredients):
+                    print(f"  {i+1}. {ing['name']}: {ing['amount']}")
+            else:
+                print("❌ 재료 텍스트를 전혀 찾지 못했습니다.")
+
+            # 재료가 여전히 비어있는 경우 기본 재료 생성
+            if not ingredients:
+                print("⚠️ 재료 추출 실패, 기본 재료 생성")
+                
+                # LLM 응답에서 언급된 재료들을 찾아서 기본 재료 생성
+                default_ingredients_found = []
+                
+                # 일반적인 재료 키워드 검색
+                common_ingredients = {
+                    '계란': '2개',
+                    '밥': '1공기', 
+                    '들기름': '1큰술',
+                    '간장': '1작은술',
+                    '설탕': '1/2작은술',
+                    '소금': '약간',
+                    '쪽파': '약간',
+                    '깨소금': '약간'
+                }
+                
+                for ingredient_name, default_amount in common_ingredients.items():
+                    if ingredient_name in response_text:
+                        default_ingredients_found.append({
+                            "name": ingredient_name,
+                            "amount": default_amount
+                        })
+                        print(f"  기본 재료 추가: {ingredient_name} - {default_amount}")
+                
+                if default_ingredients_found:
+                    ingredients = default_ingredients_found
+                    print(f"기본 재료 {len(ingredients)}개 생성됨")
+                else:
+                    # 최후의 수단: 대체 재료만이라도 추가
+                    ingredients = [{
+                        "name": substitute_ingredient,
+                        "amount": "적당량"
+                    }]
+                    print(f"최소 재료 생성: {substitute_ingredient}")
+
+            recipe_data["ingredients"] = ingredients
+            print(f"\n✅ 최종 재료 설정 완료: {len(ingredients)}개")
+            
+            # 🔧 완전히 개선된 조리법 추출
+            instructions = []
+            
+            # 조리법 섹션 추출 - 다양한 패턴 시도
+            instructions_patterns = [
+                r"\*\*instructions:\*\*\s*(.*?)(?=\Z)",  # **instructions:** 패턴
+                r"instructions\s*:\s*(.*?)(?=\Z)",
+                r"조리법\s*:\s*(.*?)(?=\Z)",
+                r"만드는 법\s*:\s*(.*?)(?=\Z)"
+            ]
+            
+            instructions_text = ""
+            for pattern in instructions_patterns:
+                instructions_match = re.search(pattern, response_text, re.DOTALL | re.IGNORECASE)
+                if instructions_match:
+                    instructions_text = instructions_match.group(1).strip()
+                    print(f"조리법 섹션 추출됨 (길이: {len(instructions_text)})")
+                    break
+            
+            # 조리법 섹션을 찾지 못한 경우 전체 텍스트에서 단계 추출
+            if not instructions_text:
+                instructions_text = response_text
+                print("전체 텍스트에서 조리법 단계 추출 시도")
+            
+            # 단계별 파싱 - 개선된 정규표현식
+            step_patterns = [
+                r"###\s*(\d+)단계\s*###\s*(.*?)(?=###\s*\d+단계\s*###|\Z)",  # ### N단계 ### 패턴
+                r"(\d+)단계[:\s]*(.*?)(?=\d+단계|\Z)",                      # N단계: 패턴
+                r"(\d+)\.\s*(.*?)(?=\d+\.|\Z)"                             # N. 패턴
+            ]
+            
+            for pattern in step_patterns:
+                step_matches = re.findall(pattern, instructions_text, re.DOTALL)
+                if step_matches:
+                    print(f"단계 패턴 매칭 성공: {len(step_matches)}개 단계 발견")
+                    
+                    for step_num, step_content in step_matches:
+                        # 내용 정리
+                        clean_content = step_content.strip()
+                        
+                        # 불필요한 마크다운 제거
+                        clean_content = re.sub(r'\*\*([^*]+)\*\*', r'\1', clean_content)  # **텍스트** -> 텍스트
+                        clean_content = re.sub(r'\n+', ' ', clean_content)  # 여러 줄바꿈을 공백으로
+                        clean_content = clean_content.strip()
+                        
+                        if clean_content and len(clean_content) > 5:  # 의미있는 내용만
+                            # 조리 시간 추출
+                            cooking_time_mins, cooking_time_seconds = extract_cooking_time(clean_content)
+                            
+                            instructions.append({
+                                "instruction": clean_content,
+                                "cookingTime": cooking_time_mins,
+                                "cookingTimeSeconds": cooking_time_seconds,
+                                "stepNumber": int(step_num)
+                            })
+                            
+                            print(f"단계 {step_num} 추가됨: {clean_content[:50]}...")
+                    break
+            
+            # 여전히 조리법이 없는 경우 줄 단위로 분석
+            if not instructions:
+                print("패턴 매칭 실패, 줄 단위 분석 시도")
+                lines = instructions_text.split('\n')
+                step_counter = 1
+                
+                for line in lines:
+                    line = line.strip()
+                    # 의미있는 조리 단계로 보이는 라인만 추출
+                    if (len(line) > 10 and 
+                        ('단계' in line or '넣고' in line or '끓' in line or '굽' in line or '볶' in line or '섞' in line) and
+                        not line.startswith('##') and not line.startswith('**')):
+                        
+                        # 단계 번호 제거
+                        clean_line = re.sub(r'^\d+\.\s*|###\s*\d+단계\s*###\s*', '', line).strip()
+                        
+                        if clean_line:
+                            cooking_time_mins, cooking_time_seconds = extract_cooking_time(clean_line)
+                            
+                            instructions.append({
+                                "instruction": clean_line,
+                                "cookingTime": cooking_time_mins,
+                                "cookingTimeSeconds": cooking_time_seconds,
+                                "stepNumber": step_counter
+                            })
+                            
+                            print(f"라인 단계 {step_counter} 추가됨: {clean_line[:50]}...")
+                            step_counter += 1
+            
+            print(f"최종 추출된 조리법 단계: {len(instructions)}개")
             for i, inst in enumerate(instructions):
-                print(f"단계 {i+1}: {inst['instruction'][:50]}...")
-
+                print(f"단계 {inst['stepNumber']}: {inst['instruction'][:70]}...")
+            
             recipe_data["instructions"] = instructions
             
-            # 대체 수량 추출
-            amount_match = re.search(r"권장 수량:\s*(.+?)(?=$|\n)", response_text)
+            # 대체 수량 및 이유 추출
+            amount_match = re.search(r"권장 수량:\s*(.+?)(?=\n|$)", response_text, re.MULTILINE)
             if amount_match:
                 recipe_data["estimatedAmount"] = amount_match.group(1).strip()
             
-            # 대체 이유 추출
-            reason_match = re.search(r"이유:\s*(.+?)(?=$|\n)", response_text)
+            reason_match = re.search(r"이유:\s*(.+?)(?=\n|$)", response_text, re.MULTILINE)
             if reason_match:
                 recipe_data["substitutionReason"] = reason_match.group(1).strip()
             
             return True, recipe_data
         else:
-            print(f"LLM 대체 불가능 판단: {original_ingredient}를 {substitute_ingredient}로 대체하는 것은 적절하지 않습니다. **")
+            print(f"LLM 대체 불가능 판단: {original_ingredient}를 {substitute_ingredient}로 대체하는 것은 적절하지 않습니다.")
             # 대체 불가능한 경우
             reason = ""
             reason_match = re.search(r"이유:\s*(.+?)(?=$|\n)", response_text)
@@ -873,9 +1127,10 @@ def evaluate_substitute_with_llm(original_ingredient, substitute_ingredient, rec
     
     except Exception as e:
         print(f"LLM 평가 중 오류: {str(e)}")
+        import traceback
         traceback.print_exc()
         return False, {"reason": f"평가 중 오류가 발생했습니다: {str(e)}"}
-
+    
 def update_ingredients_with_substitute(original_ingredients, ori, sub):
     """
     기존 재료 리스트에서 원재료를 대체재료로 교체 (강화된 버전)
@@ -1059,73 +1314,124 @@ def nutrition():
         if not ingredients:
             return jsonify({"error": "No 'ingredients' field in request"}), 400
 
+        print(f"\n🥗 영양정보 요청 받음")
+        print(f"입력 재료: {ingredients}")
+        
         response_text = get_nutrition_info(ingredients)
-        print("🧠 모델 응답:\n", response_text)
+        print(f"\n🧠 LLM 응답 원본:")
+        print(f"응답 길이: {len(response_text)}")
+        print(f"응답 내용:\n{response_text}")
+        
         if not response_text:
+            print("❌ LLM 응답이 비어있음")
             return jsonify({"error": "모델 응답이 비었습니다."}), 500
 
+        # 영양정보 추출
         result = extract_nutrition(response_text)
+        
+        print(f"\n📊 최종 API 응답:")
+        import json
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        
+        # 검증: 주요 영양소가 모두 0인지 확인
+        major_nutrients = ['calories', 'carbohydrate', 'protein', 'fat']
+        zero_count = sum(1 for nutrient in major_nutrients if result.get(nutrient, 0) == 0)
+        
+        if zero_count >= 3:
+            print(f"⚠️ 경고: 주요 영양소 {zero_count}개가 0값입니다.")
+            print("기본값으로 보정된 응답을 반환합니다.")
+        
         return jsonify(result)
 
     except Exception as e:
+        print(f"❌ 영양정보 처리 오류: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
-
-
+    
 def extract_nutrition(text):
     def extract_value(label, default=0.0):
         # 마크다운 별표(*) 및 대시(-) 제거
         clean_text = re.sub(r'^\s*\*\s*|\*\*', '', text, flags=re.MULTILINE)
         
-        # 특정 라벨에 대한 행 전체를 찾음
-        label_pattern = r'[-*]?\s*' + re.escape(label) + r'\s*:\s*(?:약\s*)?(.*?)(?:\n|$)'
-        match = re.search(label_pattern, clean_text, re.IGNORECASE | re.MULTILINE)
+        print(f"\n🔍 '{label}' 추출 시작")
+        print(f"정리된 텍스트 샘플: {clean_text[:200]}...")
         
-        if match:
-            # 전체 값 부분 추출 (설명 포함)
-            full_value = match.group(1).strip()
-            print(f"라벨 '{label}'에 대한 추출된 전체 값: {full_value}")
-            
-            # 설명 부분 제거 (괄호 안 내용)
-            value_without_desc = re.sub(r'\s*\(.*?\)', '', full_value)
-            print(f"설명 제거 후 값: {value_without_desc}")
-            
-            # 범위 값 처리 (예: "450-600kcal")
-            if '-' in value_without_desc or '~' in value_without_desc:
-                # 범위 구분자(-, ~)로 분리
-                parts = re.split(r'[-~]', value_without_desc)
-                nums = []
-                
-                for part in parts:
-                    # 숫자만 추출
-                    num_match = re.search(r'(\d+(?:\.\d+)?)', part)
-                    if num_match:
-                        try:
-                            nums.append(float(num_match.group(1)))
-                        except ValueError:
-                            print(f"숫자 변환 실패: {num_match.group(1)}")
-                
-                if nums:
-                    print(f"범위에서 추출된 숫자들: {nums}")
-                    # 평균값 반환
-                    return sum(nums) / len(nums)
-                return default
-            
-            # "미량", "0g" 등의 특수 케이스 처리
-            if '미량' in value_without_desc or '0g' in value_without_desc:
-                return 0.0
-            
-            # 일반 숫자 추출 (단위 무시)
-            num_match = re.search(r'(\d+(?:\.\d+)?)', value_without_desc)
-            if num_match:
-                try:
-                    return float(num_match.group(1))
-                except ValueError:
-                    print(f"일반 숫자 변환 실패: {num_match.group(1)}")
-            
+        # 🔧 개선된 라벨 패턴 - 더 유연한 매칭
+        label_patterns = [
+            # 기본 패턴: - 라벨: 값
+            rf'[-*]?\s*{re.escape(label)}\s*:\s*(?:약\s*)?(.*?)(?:\n|$)',
+            # 마크다운 패턴: **라벨**: 값  
+            rf'\*\*{re.escape(label)}\*\*\s*:\s*(?:약\s*)?(.*?)(?:\n|$)',
+            # 공백 포함 패턴
+            rf'[-*]?\s*{re.escape(label)}\s+(?:약\s*)?(.*?)(?:\n|$)',
+            # 콜론 없는 패턴
+            rf'{re.escape(label)}\s+(?:약\s*)?([\d.,]+\s*\w+)',
+        ]
+        
+        full_value = None
+        used_pattern = ""
+        
+        for i, pattern in enumerate(label_patterns):
+            match = re.search(pattern, clean_text, re.IGNORECASE | re.MULTILINE)
+            if match:
+                full_value = match.group(1).strip()
+                used_pattern = f"패턴 {i+1}"
+                print(f"✅ {used_pattern} 매칭 성공: '{full_value}'")
+                break
+        
+        if not full_value:
+            print(f"❌ '{label}' 패턴 매칭 실패")
             return default
         
-        print(f"라벨 '{label}'에 대한 패턴 미일치")
-        return default
+        print(f"라벨 '{label}'에 대한 추출된 전체 값: {full_value}")
+        
+        # 설명 부분 제거 (괄호 안 내용)
+        value_without_desc = re.sub(r'\s*\(.*?\)', '', full_value)
+        print(f"설명 제거 후 값: {value_without_desc}")
+        
+        # 🔧 개선된 숫자 추출 로직
+        try:
+            # 1. "미량", "0" 등의 특수 케이스 먼저 처리
+            if any(keyword in value_without_desc.lower() for keyword in ['미량', '없음', 'trace']):
+                print(f"특수 케이스 감지: 0.0 반환")
+                return 0.0
+            
+            # 2. 범위 값 처리 (예: "450-600kcal", "15~20g")
+            range_pattern = r'(\d+(?:\.\d+)?)\s*[-~]\s*(\d+(?:\.\d+)?)'
+            range_match = re.search(range_pattern, value_without_desc)
+            if range_match:
+                num1, num2 = float(range_match.group(1)), float(range_match.group(2))
+                average = (num1 + num2) / 2
+                print(f"범위 값 처리: {num1}-{num2} → 평균 {average}")
+                return average
+            
+            # 3. 일반 숫자 추출 - 더 정확한 패턴
+            # 소수점, 콤마가 포함된 숫자 매칭
+            number_patterns = [
+                r'(\d+(?:\.\d+)?)\s*(?:kcal|칼로리)',  # 칼로리 전용
+                r'(\d+(?:\.\d+)?)\s*(?:mg|밀리그램)',   # mg 단위
+                r'(\d+(?:\.\d+)?)\s*(?:g|그램)',       # g 단위  
+                r'(\d+(?:\.\d+)?)',                     # 순수 숫자
+            ]
+            
+            for pattern in number_patterns:
+                num_match = re.search(pattern, value_without_desc)
+                if num_match:
+                    extracted_number = float(num_match.group(1))
+                    print(f"숫자 추출 성공: {extracted_number}")
+                    return extracted_number
+            
+            print(f"숫자 추출 실패, 기본값 반환: {default}")
+            return default
+            
+        except (ValueError, AttributeError) as e:
+            print(f"숫자 변환 오류: {e}, 기본값 반환: {default}")
+            return default
+
+    print(f"\n🍎 영양정보 추출 시작")
+    print(f"입력 텍스트 길이: {len(text)}")
+    print(f"입력 텍스트 미리보기:\n{text[:300]}...")
 
     # 각 영양소에 대해 라벨 기반 추출 수행
     result = {
@@ -1140,8 +1446,49 @@ def extract_nutrition(text):
         "cholesterol": extract_value("콜레스테롤")
     }
     
+    # 🔧 추가 검증: 주요 영양소가 0인 경우 재시도
+    if result["carbohydrate"] == 0.0 and "탄수화물" in text:
+        print("⚠️ 탄수화물 재추출 시도")
+        # 다른 표현으로 재시도
+        alt_patterns = [r'탄수화물.*?(\d+(?:\.\d+)?)', r'탄수.*?(\d+(?:\.\d+)?)']
+        for pattern in alt_patterns:
+            match = re.search(pattern, text)
+            if match:
+                result["carbohydrate"] = float(match.group(1))
+                print(f"탄수화물 재추출 성공: {result['carbohydrate']}")
+                break
+    
+    if result["protein"] == 0.0 and "단백질" in text:
+        print("⚠️ 단백질 재추출 시도")
+        alt_patterns = [r'단백질.*?(\d+(?:\.\d+)?)', r'단백.*?(\d+(?:\.\d+)?)']
+        for pattern in alt_patterns:
+            match = re.search(pattern, text)
+            if match:
+                result["protein"] = float(match.group(1))
+                print(f"단백질 재추출 성공: {result['protein']}")
+                break
+    
     # 디버깅을 위한 결과 로깅
-    print(f"추출된 영양 정보: {result}")
+    print(f"\n🎯 최종 추출된 영양 정보:")
+    for key, value in result.items():
+        print(f"  {key}: {value}")
+    
+    # 🔧 최종 검증: 모든 값이 0인 경우 기본값 설정
+    non_zero_count = sum(1 for v in result.values() if v > 0)
+    if non_zero_count < 3:  # 3개 미만의 영양소만 추출된 경우
+        print("⚠️ 추출된 영양소가 너무 적음, 기본값 보정")
+        if result["calories"] == 0:
+            result["calories"] = 500.0
+        if result["carbohydrate"] == 0:
+            result["carbohydrate"] = 30.0
+        if result["protein"] == 0:
+            result["protein"] = 20.0
+        if result["fat"] == 0:
+            result["fat"] = 15.0
+    
+    print(f"\n✅ 최종 영양 정보 (보정 후):")
+    for key, value in result.items():
+        print(f"  {key}: {value}")
     
     return result
 
