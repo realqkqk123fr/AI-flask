@@ -353,41 +353,56 @@ def extract_instructions(text):
 # 🔧 조리 시간 추출 함수도 개선
 def extract_cooking_time(text):
     """
-    텍스트에서 조리 시간을 추출하거나 예상하는 함수 (개선된 버전)
+    텍스트에서 조리 시간을 추출하거나 예상하는 함수 (수정된 버전)
     """
     # 기본값 설정
-    cooking_time_mins = 3  # 기본 3분으로 변경
-    cooking_time_seconds = 180  # 기본 180초
+    cooking_time_mins = 5  # 기본 5분
+    cooking_time_seconds = 300  # 기본 300초 (5분)
     
     # 명시적 시간 패턴 추출 - 더 많은 패턴 지원
     time_patterns = [
         r'(\d+)\s*분(?:\s*(\d+)\s*초)?',  # N분 M초
-        r'(\d+)\s*분간',                  # N분간
+        r'약\s*(\d+)\s*분(?:\s*(\d+)\s*초)?',  # 약 N분 M초
+        r'(\d+)분간',                  # N분간
         r'약\s*(\d+)\s*분',               # 약 N분
         r'(\d+)-(\d+)\s*분',              # N-M분
-        r'(\d+)\s*초'                     # N초
+        r'(\d+)\s*초',                     # N초
+        r'(\d+)초간',                     # N초간
+        r'약\s*(\d+)\s*초'                # 약 N초
     ]
     
     for pattern in time_patterns:
         time_match = re.search(pattern, text)
         if time_match:
             groups = time_match.groups()
-            if len(groups) >= 2 and groups[1]:  # 분과 초가 모두 있는 경우
+            
+            # "N초" 패턴인 경우
+            if '초' in pattern and '분' not in pattern:
+                seconds = int(groups[0])
+                cooking_time_seconds = seconds
+                cooking_time_mins = seconds // 60  # 초를 분으로 변환 (나눗셈의 몫)
+                
+                print(f"초 단위 시간 추출: {seconds}초 = {cooking_time_mins}분 {seconds % 60}초")
+                return cooking_time_mins, cooking_time_seconds
+            
+            # "N분 M초" 패턴인 경우
+            elif len(groups) >= 2 and groups[1] is not None:
                 minutes = int(groups[0])
                 seconds = int(groups[1])
                 cooking_time_mins = minutes
                 cooking_time_seconds = minutes * 60 + seconds
-            elif '초' in pattern:  # 초만 있는 경우
-                total_seconds = int(groups[0])
-                cooking_time_seconds = total_seconds
-                cooking_time_mins = total_seconds // 60
-            else:  # 분만 있는 경우
+                
+                print(f"분/초 단위 시간 추출: {minutes}분 {seconds}초 = {cooking_time_seconds}초")
+                return cooking_time_mins, cooking_time_seconds
+            
+            # "N분" 패턴인 경우
+            else:
                 minutes = int(groups[0])
                 cooking_time_mins = minutes
                 cooking_time_seconds = minutes * 60
-            
-            print(f"시간 추출 성공: {cooking_time_mins}분 ({cooking_time_seconds}초)")
-            return cooking_time_mins, cooking_time_seconds
+                
+                print(f"분 단위 시간 추출: {minutes}분 = {cooking_time_seconds}초")
+                return cooking_time_mins, cooking_time_seconds
     
     # 패턴이 없는 경우 텍스트 내용에 따라 시간 추정 (개선된 로직)
     word_count = len(text.split())
@@ -406,7 +421,7 @@ def extract_cooking_time(text):
         # 기본 추정: 텍스트 길이에 비례
         cooking_time_seconds = max(60, min(8 * 60, word_count * 10))       # 1-8분
     
-    cooking_time_mins = cooking_time_seconds // 60
+    cooking_time_mins = cooking_time_seconds // 60  # 올바른 분 단위 계산 (소수점 버림)
     
     print(f"시간 추정: {cooking_time_mins}분 ({cooking_time_seconds}초) - 키워드 기반")
     return cooking_time_mins, cooking_time_seconds
@@ -1513,6 +1528,14 @@ def analyze_and_generate_recipe():
         
         # 세션 ID (필요한 경우)
         session_id = request.form.get('sessionId', '')
+
+        # 사용자 식습관 및 선호도 정보 가져오기
+        user_habit = request.form.get('userHabit', '')
+        user_preference = request.form.get('userPreference', '')
+        
+        # 인코딩 디버깅
+        print(f"사용자 식습관 (repr): {user_habit!r}")
+        print(f"사용자 선호도 (repr): {user_preference!r}")
         
         # 이미지 저장
         image_file = request.files['image']
@@ -1595,6 +1618,12 @@ def analyze_and_generate_recipe():
 
             이미지에서 감지된 재료: {ingredients_str}
 
+            사용자 식습관: {user_habit}
+            사용자 선호도: {user_preference}
+
+            위 정보를 고려하여 사용자의 식습관과 선호도에 맞는 레시피를 생성해주세요.
+            예를 들어, 사용자가 채식주의자라면 동물성 재료를 사용하지 않고,
+            저탄수화물 식이를 선호한다면 탄수화물이 적은 레시피를 제공해주세요.
 
             다음 형식으로 레시피를 제공해주세요:
             - name: 레시피 이름
@@ -1621,6 +1650,11 @@ def analyze_and_generate_recipe():
         else:
             combined_query = f"""
             {instructions}
+
+            사용자 식습관: {user_habit}
+            사용자 선호도: {user_preference}
+            
+            위 정보를 고려하여 사용자의 식습관과 선호도에 맞는 레시피를 생성해주세요.
 
             다음 형식으로 레시피를 제공해주세요:
             - name: 레시피 이름
