@@ -425,7 +425,7 @@ def extract_cooking_time(text):
     
     print(f"시간 추정: {cooking_time_mins}분 ({cooking_time_seconds}초) - 키워드 기반")
     return cooking_time_mins, cooking_time_seconds
-
+    
 # 기존 extract_instructions 함수 이후에 추가 처리 단계 구현
 def process_instruction_steps(instructions_raw):
     processed_instructions = []
